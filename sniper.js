@@ -51,10 +51,31 @@ function toggleVis(inputId) {
     input.type = input.type === 'password' ? 'text' : 'password';
 }
 
-function loadConfig() {
-    const saved = localStorage.getItem('spyhub-sniper-config');
-    if (saved) {
-        const c = JSON.parse(saved);
+async function loadConfig() {
+    let c = null;
+
+    // 1. Try to fetch saved config from server (works on Render)
+    try {
+        const resp = await fetch('/api/config');
+        if (resp.ok) {
+            const serverConfig = await resp.json();
+            if (serverConfig && Object.keys(serverConfig).length > 0) {
+                c = serverConfig;
+            }
+        }
+    } catch (e) {
+        // running purely client-side without server
+    }
+
+    // 2. Fallback to localStorage if server has no config yet
+    if (!c) {
+        const saved = localStorage.getItem('spyhub-sniper-config');
+        if (saved) {
+            try { c = JSON.parse(saved); } catch (e) {}
+        }
+    }
+
+    if (c) {
         document.getElementById('discord-token').value = c.token || '';
         document.getElementById('channel-id').value = c.channelId || '';
         document.getElementById('guild-id').value = c.guildId || '';
@@ -93,7 +114,7 @@ function saveConfig() {
     const afkTokensVal = document.getElementById('afk-tokens')?.value || '';
     const afkStatusVal = document.getElementById('afk-status-text')?.value || 'Active';
 
-    localStorage.setItem('spyhub-sniper-config', JSON.stringify({
+    const payload = {
         token: config.token,
         channelId: config.channelId,
         guildId: config.guildId,
@@ -105,7 +126,17 @@ function saveConfig() {
         spyhubCookie: config.spyhubCookie,
         afkTokens: afkTokensVal,
         afkStatusText: afkStatusVal
-    }));
+    };
+
+    // Save to localStorage immediately
+    localStorage.setItem('spyhub-sniper-config', JSON.stringify(payload));
+
+    // Auto-save to Render server asynchronously
+    fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    }).catch(() => {});
 }
 
 function startSniper() {
