@@ -56,45 +56,136 @@ function toggleVis(inputId) {
 }
 
 async function loadConfig() {
-    let c = null;
+    let localConfig = null;
+    let serverConfig = null;
 
-    // 1. Try to fetch saved config from server (works on Render)
+    // 1. Read localStorage
+    const saved = localStorage.getItem('spyhub-sniper-config');
+    if (saved) {
+        try { localConfig = JSON.parse(saved); } catch (e) {}
+    }
+
+    // 2. Fetch server config
     try {
         const resp = await fetch('/api/config');
         if (resp.ok) {
-            const serverConfig = await resp.json();
-            if (serverConfig && Object.keys(serverConfig).length > 0) {
-                c = serverConfig;
-            }
+            serverConfig = await resp.json();
         }
-    } catch (e) {
-        // running purely client-side without server
-    }
+    } catch (e) {}
 
-    // 2. Fallback to localStorage if server has no config yet
-    if (!c) {
-        const saved = localStorage.getItem('spyhub-sniper-config');
-        if (saved) {
-            try { c = JSON.parse(saved); } catch (e) {}
-        }
+    // 3. Smart Merge: combine all saved fields from both sources
+    const c = Object.assign({}, localConfig || {}, serverConfig || {});
+
+    // If local had credentials that server didn't have, auto-sync back to server immediately
+    if (localConfig && localConfig.token && (!serverConfig || !serverConfig.token)) {
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(c)
+        }).catch(() => {});
     }
 
     if (c) {
-        document.getElementById('discord-token').value = c.token || '';
-        document.getElementById('channel-id').value = c.channelId || '';
+        if (c.token) document.getElementById('discord-token').value = c.token;
+        if (c.channelId) document.getElementById('channel-id').value = c.channelId;
         config.channelIds = (c.channelId || '').split(/[\s,]+/).filter(id => id.length > 0);
-        document.getElementById('guild-id').value = c.guildId || '';
-        document.getElementById('code-prefix').value = c.codePrefix || 'SPY-';
-        document.getElementById('code-regex').value = c.codeRegex || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}';
+        if (c.guildId) document.getElementById('guild-id').value = c.guildId;
+        if (c.codePrefix) document.getElementById('code-prefix').value = c.codePrefix;
+        if (c.codeRegex) document.getElementById('code-regex').value = c.codeRegex;
         document.getElementById('auto-redeem').checked = c.autoRedeem !== false;
         document.getElementById('sound-alert').checked = c.soundAlert !== false;
         const antiTrapEl = document.getElementById('anti-trap');
         if (antiTrapEl) antiTrapEl.checked = c.antiTrap !== false;
-        document.getElementById('spyhub-cookie').value = c.spyhubCookie || '';
+        const autoStartEl = document.getElementById('auto-start');
+        if (autoStartEl) autoStartEl.checked = c.autoStart !== false;
+        const prefireModeEl = document.getElementById('prefire-mode');
+        if (prefireModeEl && c.prefireMode !== undefined) prefireModeEl.checked = !!c.prefireMode;
+        if (c.spyhubCookie) document.getElementById('spyhub-cookie').value = c.spyhubCookie;
         const afkTokensEl = document.getElementById('afk-tokens');
         if (afkTokensEl && c.afkTokens) afkTokensEl.value = c.afkTokens;
         const afkStatusEl = document.getElementById('afk-status-text');
         if (afkStatusEl && c.afkStatusText) afkStatusEl.value = c.afkStatusText;
+
+        // Restore saved snipe history
+        if (c.history && Array.isArray(c.history) && c.history.length > 0) {
+            history = c.history;
+            renderHistory();
+        }
+
+        // Restore saved statistics
+        if (c.stats) {
+            stats = Object.assign(stats, c.stats);
+            updateStat('stat-messages', stats.messages);
+            updateStat('stat-codes', stats.codes);
+            updateStat('stat-redeemed', stats.redeemed);
+        }
+
+        flashSaveIndicator('✓ Loaded saved settings');
+
+        // Auto-Start check: launch immediately if enabled and credentials exist
+        if (c.autoStart !== false && c.token && c.channelId) {
+            addSystemMsg('🚀 Auto-Start enabled: launching sniper in 1s...', 'success');
+            setTimeout(() => {
+                if (!isConnected) startSniper();
+            }, 1000);
+        }
+    }
+
+    // Attach listeners so ANY input automatically saves to both localStorage and server
+    setupAutoSaveListeners();
+}
+
+function flashSaveIndicator(text = '✓ Auto-Saved to Browser & Server') {
+    const el = document.getElementById('save-indicator');
+    if (el) {
+        el.textContent = text;
+        el.classList.add('saved');
+        setTimeout(() => el.classList.remove('saved'), 1500);
+    }
+    const mini = document.getElementById('save-indicator-sniper');
+    if (mini) {
+        mini.textContent = '✓ Saved';
+        mini.classList.add('saved');
+        setTimeout(() => mini.classList.remove('saved'), 1500);
+    }
+}
+
+function manualSave() {
+    saveConfig();
+    const btnText = document.getElementById('save-btn-text');
+    if (btnText) {
+        btnText.textContent = '✓ Saved Permanently!';
+        setTimeout(() => { btnText.textContent = '💾 Save Settings'; }, 2000);
+    }
+    flashSaveIndicator('✓ Permanently Saved to Disk & Browser');
+}
+
+let autoSaveDebounce = null;
+function setupAutoSaveListeners() {
+    const inputs = document.querySelectorAll('#setup-panel input, #setup-panel textarea');
+    inputs.forEach(el => {
+        el.addEventListener('input', () => {
+            clearTimeout(autoSaveDebounce);
+            autoSaveDebounce = setTimeout(() => {
+                saveConfig();
+                checkTokenAutoStart();
+            }, 300);
+        });
+        el.addEventListener('change', () => {
+            saveConfig();
+            checkTokenAutoStart();
+        });
+    });
+}
+
+function checkTokenAutoStart() {
+    const autoStartEl = document.getElementById('auto-start');
+    if (!autoStartEl || !autoStartEl.checked) return;
+    const token = document.getElementById('discord-token').value.trim();
+    const channelId = document.getElementById('channel-id').value.trim();
+    if (token.length > 30 && channelId.length > 10 && !isConnected) {
+        addSystemMsg('🚀 Token & Channel detected! Auto-starting sniper...', 'success');
+        startSniper();
     }
 }
 
@@ -108,6 +199,10 @@ function saveConfig() {
     config.soundAlert = document.getElementById('sound-alert').checked;
     const antiTrapEl = document.getElementById('anti-trap');
     config.antiTrap = antiTrapEl ? antiTrapEl.checked : true;
+    const autoStartEl = document.getElementById('auto-start');
+    const autoStartVal = autoStartEl ? autoStartEl.checked : true;
+    const prefireModeEl = document.getElementById('prefire-mode');
+    const prefireModeVal = prefireModeEl ? prefireModeEl.checked : false;
     config.spyhubCookie = document.getElementById('spyhub-cookie').value.trim();
 
     const regexStr = document.getElementById('code-regex').value.trim();
@@ -129,9 +224,13 @@ function saveConfig() {
         autoRedeem: config.autoRedeem,
         soundAlert: config.soundAlert,
         antiTrap: config.antiTrap,
+        autoStart: autoStartVal,
+        prefireMode: prefireModeVal,
         spyhubCookie: config.spyhubCookie,
         afkTokens: afkTokensVal,
-        afkStatusText: afkStatusVal
+        afkStatusText: afkStatusVal,
+        history: history.slice(0, 50),
+        stats: stats
     };
 
     // Save to localStorage immediately
@@ -143,6 +242,8 @@ function saveConfig() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     }).catch(() => {});
+
+    flashSaveIndicator('✓ Auto-Saved to Browser & Server');
 }
 
 function startSniper() {
@@ -524,26 +625,35 @@ function testConnection() {
             log(`✓ Authenticated as: ${user.username}#${user.discriminator || '0'} (ID: ${user.id})`, 't-ok');
             log(`✓ Guilds loaded: ${guildCount}`, 't-ok');
             
-            // check if the target channel exists in any guild
-            let foundChannel = false;
+            // check if the target channels exist in any guild
+            const targetIds = channelId.split(/[\s,]+/).filter(id => id.length > 0);
+            let foundChannels = [];
+            let missingChannels = [...targetIds];
             let foundGuild = false;
+
             if (data.d.guilds) {
                 for (const g of data.d.guilds) {
                     if (guildId && g.id === guildId) foundGuild = true;
                     if (g.channels) {
-                        const ch = g.channels.find(c => c.id === channelId);
-                        if (ch) {
-                            foundChannel = true;
-                            log(`✓ Channel found: #${ch.name} (type: ${ch.type}) in guild: ${g.properties?.name || g.id}`, 't-ok');
-                            break;
+                        for (const tid of targetIds) {
+                            const ch = g.channels.find(c => c.id === tid);
+                            if (ch && !foundChannels.some(f => f.id === tid)) {
+                                foundChannels.push({ id: tid, name: ch.name, type: ch.type, guild: g.properties?.name || g.id });
+                                missingChannels = missingChannels.filter(m => m !== tid);
+                            }
                         }
                     }
                 }
             }
-            
-            if (!foundChannel) {
-                log(`⚠ Channel ${channelId} not found in READY data — you may not have access or it's a DM`, 't-warn');
+
+            for (const fc of foundChannels) {
+                log(`✓ Channel found: #${fc.name} (${fc.id}) in guild: ${fc.guild}`, 't-ok');
             }
+
+            for (const mc of missingChannels) {
+                log(`⚠ Channel ${mc} not in initial guild payload (could be DM, thread, or lazy-loaded)`, 't-warn');
+            }
+
             if (guildId && !foundGuild) {
                 log(`⚠ Guild ${guildId} not found in your guilds`, 't-warn');
             }
@@ -726,6 +836,14 @@ function handleMessage(msg, isEdit = false) {
         if (config.soundAlert) playPrefireAlert();
     }
 
+    // Detect chat messages confirming giftcard is claimed / already redeemed
+    const claimedPatterns = /\b(already\s*redeemed|already\s*claimed|already\s*taken|someone\s*(already\s*)?took\s*it|i\s*claimed|i\s*redeemed|i\s*got\s*it|code\s*is\s*redeemed|it['’]s\s*redeemed|already\s*used|too\s*late)\b/i;
+    if (claimedPatterns.test(content)) {
+        addSystemMsg(`📢 Chat Alert: Giftcard confirmed already claimed/redeemed! ("${content.substring(0, 60)}" by ${author})`, 'error');
+        setRedeemStatus(`⚠️ Chat Confirmed: Giftcard already redeemed! ("${content.substring(0, 40)}")`, 'error');
+        if (config.soundAlert) playBuzzer();
+    }
+
     // scan for codes
     config.codeRegex.lastIndex = 0; // reset regex state
     const matches = content.match(config.codeRegex);
@@ -858,33 +976,100 @@ async function redeemCode(code, snipeDetectTime) {
     setRedeemStatus('Submitting code...', 'pending');
 
     const snipeTime = snipeDetectTime || Date.now();
-    
+    let copyMs = 0;
+    let redeemMs = 0;
+    let totalMs = 0;
+
     try {
-        // Method 1: try SpyHub API directly if we have a cookie/session
-        if (config.spyhubCookie) {
+        // 1. Copy code to clipboard & measure ms
+        const tCopyStart = Date.now();
+        try {
+            await navigator.clipboard.writeText(code);
+            copyMs = Date.now() - tCopyStart;
+            const copyEl = document.getElementById('speed-copy');
+            if (copyEl) copyEl.textContent = `${copyMs}ms`;
+        } catch (clipErr) {
+            const copyEl = document.getElementById('speed-copy');
+            if (copyEl) copyEl.textContent = 'Denied';
+        }
+
+        // 2. Dispatch Redeem & measure ms
+        const tRedeemStart = Date.now();
+        let redeemSuccess = false;
+        let isAlreadyRedeemed = false;
+
+        // Try server-side ultra-fast HTTPS redeem first (zero CORS)
+        try {
+            const srvResp = await fetch('/api/sniper/redeem', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ code })
+            });
+            if (srvResp.ok) {
+                const srvData = await srvResp.json();
+                redeemMs = srvData.ms || (Date.now() - tRedeemStart);
+                redeemSuccess = srvData.success;
+                if (srvData.status === 'already_redeemed') {
+                    isAlreadyRedeemed = true;
+                }
+            }
+        } catch (srvErr) {}
+
+        // Fallback to direct client fetch if server redeem failed and cookie exists
+        if (!redeemSuccess && !isAlreadyRedeemed && config.spyhubCookie) {
             const result = await redeemViaAPI(code);
-            if (result.success) {
-                onRedeemSuccess(code, snipeTime);
-                return;
+            redeemMs = Date.now() - tRedeemStart;
+            redeemSuccess = result.success;
+            if (result.status === 'already_redeemed') {
+                isAlreadyRedeemed = true;
             }
         }
-        
-        // Method 2: open SpyHub in new tab with code pre-filled via URL params
-        // and copy code to clipboard for manual paste
-        await navigator.clipboard.writeText(code);
-        
-        // open the giftcard page
+
+        if (!redeemMs) {
+            redeemMs = Date.now() - tRedeemStart;
+        }
+
+        totalMs = Date.now() - snipeTime;
+
+        // Update live ms widgets
+        const redEl = document.getElementById('speed-redeem');
+        if (redEl) redEl.textContent = `${redeemMs}ms`;
+        const totEl = document.getElementById('speed-total');
+        if (totEl) totEl.textContent = `${totalMs}ms`;
+        const latEl = document.getElementById('stat-latency');
+        if (latEl) latEl.textContent = `${totalMs}ms`;
+
+        if (redeemSuccess) {
+            onRedeemSuccess(code, snipeTime, copyMs, redeemMs, totalMs);
+            return;
+        }
+
+        if (isAlreadyRedeemed) {
+            setRedeemStatus(`❌ ALREADY REDEEMED: ${code} was claimed by someone else (${totalMs}ms)`, 'error');
+            addHistoryItem(code, 'already_redeemed', snipeTime, totalMs);
+            addSystemMsg(`⚠️ Code ${code} was ALREADY CLAIMED by another user! (${totalMs}ms)`, 'error');
+            if (config.soundAlert) playBuzzer();
+            return;
+        }
+
+        // Method 2: open SpyHub in new tab with clipboard ready for instant paste
         window.open(`${SPYHUB_BASE}/`, '_blank');
-        
-        setRedeemStatus(`Code copied to clipboard! Paste it on SpyHub. Code: ${code}`, 'pending');
-        addHistoryItem(code, 'sniped', snipeTime);
+
+        setRedeemStatus(`⚡ Copied in ${copyMs}ms! Total: ${totalMs}ms. Paste it on SpyHub. Code: ${code}`, 'pending');
+        addHistoryItem(code, 'sniped', snipeTime, totalMs);
         stats.redeemed++;
         updateStat('stat-redeemed', stats.redeemed);
-        
+
     } catch (err) {
         console.error('Redeem error:', err);
-        setRedeemStatus(`Error: ${err.message}. Code: ${code}`, 'error');
-        addHistoryItem(code, 'failed', snipeTime);
+        totalMs = Date.now() - snipeTime;
+        const totEl = document.getElementById('speed-total');
+        if (totEl) totEl.textContent = `${totalMs}ms`;
+        const latEl = document.getElementById('stat-latency');
+        if (latEl) latEl.textContent = `${totalMs}ms`;
+
+        setRedeemStatus(`Error: ${err.message} (${totalMs}ms). Code: ${code}`, 'error');
+        addHistoryItem(code, 'failed', snipeTime, totalMs);
     } finally {
         btn.classList.remove('loading');
         btn.textContent = 'Redeem Code';
@@ -892,8 +1077,6 @@ async function redeemCode(code, snipeDetectTime) {
 }
 
 async function redeemViaAPI(code) {
-    // attempt to hit SpyHub's redeem endpoint
-    // the actual endpoint path may vary — this is a best-guess from the site structure
     try {
         const resp = await fetch(`${SPYHUB_API}/site/giftcard/redeem`, {
             method: 'POST',
@@ -912,22 +1095,24 @@ async function redeemViaAPI(code) {
             return { success: true, data };
         } else {
             const errData = await resp.text();
-            return { success: false, error: errData };
+            const lower = (errData || '').toLowerCase();
+            const isClaimed = lower.includes('already') || lower.includes('claimed') || lower.includes('used');
+            return { success: false, status: isClaimed ? 'already_redeemed' : 'failed', error: errData };
         }
     } catch (e) {
         return { success: false, error: e.message };
     }
 }
 
-function onRedeemSuccess(code, snipeTime) {
-    const elapsed = Date.now() - snipeTime;
-    setRedeemStatus(`✅ Redeemed! Code: ${code} (${elapsed}ms)`, 'success');
-    addHistoryItem(code, 'sniped', snipeTime);
+function onRedeemSuccess(code, snipeTime, copyMs, redeemMs, totalMs) {
+    const elapsed = totalMs || (Date.now() - snipeTime);
+    setRedeemStatus(`✅ Redeemed! Code: ${code} (Copy: ${copyMs || 0}ms • Network: ${redeemMs || 0}ms • Total: ${elapsed}ms)`, 'success');
+    addHistoryItem(code, 'sniped', snipeTime, elapsed);
     stats.redeemed++;
     updateStat('stat-redeemed', stats.redeemed);
-    
-    addSystemMsg(`✅ REDEEMED: ${code} in ${elapsed}ms`, 'success');
-    
+
+    addSystemMsg(`✅ REDEEMED: ${code} in ${elapsed}ms [Copy: ${copyMs || 0}ms | Net: ${redeemMs || 0}ms]`, 'success');
+
     if (config.soundAlert) playSuccess();
 }
 
@@ -977,9 +1162,12 @@ function clearCode() {
 // History
 // ============================================
 
-function addHistoryItem(code, status, timestamp) {
-    history.unshift({ code, status, time: new Date(timestamp) });
+function addHistoryItem(code, status, timestamp, ms) {
+    history.unshift({ code, status, time: new Date(timestamp), ms });
+    if (history.length > 50) history.pop();
     renderHistory();
+    // Persist history and stats automatically
+    saveConfig();
 }
 
 function renderHistory() {
@@ -991,7 +1179,7 @@ function renderHistory() {
     list.innerHTML = history.map(h => `
         <div class="history-item">
             <span class="hi-code">${escapeHtml(h.code)}</span>
-            <span class="hi-status ${h.status}">${h.status.toUpperCase()}</span>
+            <span class="hi-status ${h.status}">${h.status.toUpperCase()} ${h.ms ? '(' + h.ms + 'ms)' : ''}</span>
             <span class="hi-time">${h.time.toLocaleTimeString('en-GB')}</span>
         </div>
     `).join('');
@@ -1080,6 +1268,23 @@ function playSuccess() {
         gain.connect(ctx.destination);
         osc.start(ctx.currentTime);
         osc.stop(ctx.currentTime + 0.5);
+    } catch (e) {}
+}
+
+function playBuzzer() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(160, ctx.currentTime);
+        osc.frequency.setValueAtTime(120, ctx.currentTime + 0.12);
+        gain.gain.setValueAtTime(0.25, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.3);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime);
+        osc.stop(ctx.currentTime + 0.3);
     } catch (e) {}
 }
 
@@ -1464,18 +1669,36 @@ function handleSSEEvent(data) {
             break;
 
         case 'redeem':
+            const scEl = document.getElementById('speed-copy');
+            if (scEl) scEl.textContent = '0ms (Server)';
+            const srEl = document.getElementById('speed-redeem');
+            if (srEl) srEl.textContent = `${data.ms}ms`;
+            const stEl = document.getElementById('speed-total');
+            if (stEl) stEl.textContent = `${data.ms}ms`;
+            const slEl = document.getElementById('stat-latency');
+            if (slEl) slEl.textContent = `${data.ms}ms`;
+
             if (data.status === 'redeemed') {
                 stats.redeemed++;
                 updateStat('stat-redeemed', stats.redeemed);
-                addHistoryItem(data.code, 'sniped', Date.now());
+                addHistoryItem(data.code, 'sniped', Date.now(), data.ms);
                 if (config.soundAlert) playSuccess();
                 setRedeemStatus(`✅ Server redeemed: ${data.code} (${data.ms}ms)`, 'success');
-                // update latency display
-                document.getElementById('stat-latency').textContent = `${data.ms}ms`;
+            } else if (data.status === 'already_redeemed') {
+                addHistoryItem(data.code, 'already_redeemed', Date.now(), data.ms);
+                setRedeemStatus(`❌ ALREADY REDEEMED: ${data.code} was claimed by someone else (${data.ms}ms)`, 'error');
+                addSystemMsg(`⚠️ [SRV] ALREADY REDEEMED: ${data.code} (Claimed by another user)`, 'error');
+                if (config.soundAlert) playBuzzer();
             } else {
-                addHistoryItem(data.code, 'failed', Date.now());
+                addHistoryItem(data.code, 'failed', Date.now(), data.ms);
                 setRedeemStatus(`❌ Server redeem failed: ${data.code} (${data.ms}ms)`, 'error');
             }
+            break;
+
+        case 'chat_claimed':
+            addSystemMsg(`📢 [SRV] Chat alert: Giftcard claimed/redeemed! ("${(data.content || '').substring(0, 60)}" from ${data.author})`, 'error');
+            setRedeemStatus(`⚠️ Chat Alert: Code was already claimed! ("${(data.content || '').substring(0, 40)}")`, 'error');
+            if (config.soundAlert) playBuzzer();
             break;
 
         case 'prefire_trigger':
@@ -1500,10 +1723,18 @@ async function runBenchmark() {
     try {
         const resp = await fetch('/api/sniper/benchmark');
         const data = await resp.json();
-        const msg = `🏎️ Benchmark: Total ${data.total_ms}ms | Regex: ${data.regex_ms}ms | Trap Check: ${data.trap_check_ms}ms | HTTP Redeem: ${data.http_redeem_ms}ms`;
+        const msg = `🏎️ Benchmark: Total ${data.total_ms}ms | Regex: ${data.regex_ms}ms | Trap: ${data.trap_check_ms}ms | HTTP: ${data.http_redeem_ms}ms`;
         addSystemMsg(msg, 'success');
         setRedeemStatus(msg, 'success');
-        document.getElementById('stat-latency').textContent = `${data.http_redeem_ms}ms`;
+
+        const scEl = document.getElementById('speed-copy');
+        if (scEl) scEl.textContent = `${data.regex_ms + data.trap_check_ms}ms (Filter)`;
+        const srEl = document.getElementById('speed-redeem');
+        if (srEl) srEl.textContent = `${data.http_redeem_ms}ms`;
+        const stEl = document.getElementById('speed-total');
+        if (stEl) stEl.textContent = `${data.total_ms}ms`;
+        const slEl = document.getElementById('stat-latency');
+        if (slEl) slEl.textContent = `${data.total_ms}ms`;
     } catch (e) {
         addSystemMsg('Benchmark failed: ' + e.message, 'error');
         setRedeemStatus('Benchmark failed: ' + e.message, 'error');

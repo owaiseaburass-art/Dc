@@ -14,7 +14,7 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Ensure config file exists
+// Ensure config file exists & load persisted state
 if (!fs.existsSync(CONFIG_FILE)) {
     fs.writeFileSync(CONFIG_FILE, JSON.stringify({}, null, 2));
 }
@@ -33,6 +33,37 @@ let sniperState = {
     startTime: null,
     lastSnipeMs: null    // latency of last snipe attempt
 };
+
+// Restore persisted stats and codes from config.json if available
+try {
+    if (fs.existsSync(CONFIG_FILE)) {
+        const savedCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
+        if (savedCfg.stats) {
+            sniperState.stats = Object.assign(sniperState.stats, savedCfg.stats);
+        }
+        if (savedCfg.recentCodes && Array.isArray(savedCfg.recentCodes)) {
+            sniperState.recentCodes = savedCfg.recentCodes;
+        }
+    }
+} catch (e) {
+    console.error('[Config] Failed to preload persisted state:', e.message);
+}
+
+function persistServerConfig(extra = {}) {
+    try {
+        let cur = {};
+        if (fs.existsSync(CONFIG_FILE)) {
+            cur = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
+        }
+        const merged = Object.assign({}, cur, extra, {
+            stats: sniperState.stats,
+            recentCodes: sniperState.recentCodes.slice(-50)
+        });
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf8');
+    } catch (e) {
+        console.error('[Config] Error persisting server state:', e.message);
+    }
+}
 
 let sniperWs = null;
 let sniperHeartbeat = null;
@@ -158,23 +189,47 @@ async function serverRedeemCode(code, cfg) {
         const elapsed = Date.now() - snipeStart;
         sniperState.lastSnipeMs = elapsed;
 
-        if (result.status >= 200 && result.status < 300) {
+        const rawLower = (result.body || '').toLowerCase();
+        const isAlreadyRedeemed = rawLower.includes('already redeemed') || 
+                                  rawLower.includes('already claimed') || 
+                                  rawLower.includes('already used') || 
+                                  rawLower.includes('has already been redeemed') ||
+                                  rawLower.includes('has been claimed') ||
+                                  rawLower.includes('already_redeemed');
+
+        let responseJson = null;
+        try { responseJson = JSON.parse(result.body); } catch(e) {}
+
+        const isSuccess = (result.status >= 200 && result.status < 300) && !isAlreadyRedeemed && (!responseJson || responseJson.success !== false);
+
+        if (isSuccess) {
             sniperState.stats.redeemed++;
             sniperLog(`✅ REDEEMED "${code}" in ${elapsed}ms! Response: ${result.body}`, 'success');
             sniperState.recentCodes.push({
                 code, status: 'redeemed', time: new Date().toISOString(), ms: elapsed,
                 response: result.body.substring(0, 200)
             });
+            persistServerConfig();
             pushEvent('redeem', { code, status: 'redeemed', ms: elapsed, response: result.body });
-            return true;
+            return { success: true, status: 'redeemed', ms: elapsed };
+        } else if (isAlreadyRedeemed) {
+            sniperLog(`⚠️ GIFT CARD ALREADY REDEEMED: "${code}" was taken by someone else! (${elapsed}ms)`, 'warn');
+            sniperState.recentCodes.push({
+                code, status: 'already_redeemed', time: new Date().toISOString(), ms: elapsed,
+                response: result.body.substring(0, 200)
+            });
+            persistServerConfig();
+            pushEvent('redeem', { code, status: 'already_redeemed', ms: elapsed, reason: 'Already redeemed by someone else', response: result.body });
+            return { success: false, status: 'already_redeemed', ms: elapsed };
         } else {
             sniperLog(`⚠ Redeem returned ${result.status}: ${result.body.substring(0, 200)}`, 'warn');
             sniperState.recentCodes.push({
                 code, status: 'failed', time: new Date().toISOString(), ms: elapsed,
                 response: result.body.substring(0, 200)
             });
+            persistServerConfig();
             pushEvent('redeem', { code, status: 'failed', ms: elapsed, response: result.body });
-            return false;
+            return { success: false, status: 'failed', ms: elapsed };
         }
     } catch (err) {
         const elapsed = Date.now() - snipeStart;
@@ -184,7 +239,7 @@ async function serverRedeemCode(code, cfg) {
             code, status: 'error', time: new Date().toISOString(), ms: elapsed, error: err.message
         });
         pushEvent('redeem', { code, status: 'error', ms: elapsed, error: err.message });
-        return false;
+        return { success: false, status: 'error', ms: elapsed, error: err.message };
     }
 }
 
@@ -411,6 +466,13 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
         pushEvent('prefire_trigger', { author, content: content.substring(0, 200) });
     }
 
+    // Detect chat messages saying the giftcard was already redeemed / claimed
+    const claimedPatterns = /\b(already\s*redeemed|already\s*claimed|already\s*taken|someone\s*(already\s*)?took\s*it|i\s*claimed|i\s*redeemed|i\s*got\s*it|code\s*is\s*redeemed|it['’]s\s*redeemed|already\s*used|too\s*late)\b/i;
+    if (claimedPatterns.test(content)) {
+        sniperLog(`📢 Chat confirmed code was already claimed/redeemed from ${author}: "${content.substring(0, 80)}"`, 'warn');
+        pushEvent('chat_claimed', { author, content: content.substring(0, 200) });
+    }
+
     // Scan for codes
     codeRegex.lastIndex = 0;
     const matches = content.match(codeRegex);
@@ -555,8 +617,8 @@ app.get('/api/config', (req, res) => {
 app.post('/api/config', (req, res) => {
     try {
         const newConfig = req.body || {};
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(newConfig, null, 2), 'utf8');
-        res.json({ success: true, message: 'Settings auto-saved successfully' });
+        persistServerConfig(newConfig);
+        res.json({ success: true, message: 'Settings and state permanently saved' });
     } catch (err) {
         console.error('Error writing config:', err);
         res.status(500).json({ error: 'Failed to save config' });
@@ -564,6 +626,18 @@ app.post('/api/config', (req, res) => {
 });
 
 // Server-side sniper control
+app.post('/api/sniper/redeem', async (req, res) => {
+    const { code } = req.body;
+    if (!code) return res.status(400).json({ error: 'Code is required' });
+    try {
+        const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
+        const outcome = await serverRedeemCode(code, cfg);
+        res.json(outcome);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
 app.post('/api/sniper/start', (req, res) => {
     if (sniperState.running) {
         return res.json({ success: false, message: 'Sniper already running', state: sniperState });

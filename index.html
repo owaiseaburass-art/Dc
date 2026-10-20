@@ -15,6 +15,9 @@
                 <span class="logo-icon">⚡</span>
                 <h1>SpyHub Sniper</h1>
                 <span class="version">v1.0</span>
+                <div class="save-status-bar">
+                    <span id="save-indicator" class="save-indicator">✓ Auto-saved to Browser & Server</span>
+                </div>
             </div>
             
             <div class="setup-grid">
@@ -91,6 +94,12 @@
                             </div>
                             <div class="checkbox-group full-width">
                                 <label>
+                                    <input type="checkbox" id="auto-start" checked>
+                                    🚀 Auto-Start (Launch instantly when token is provided / page loads)
+                                </label>
+                            </div>
+                            <div class="checkbox-group full-width">
+                                <label>
                                     <input type="checkbox" id="anti-trap" checked>
                                     🛡️ Anti-Trap (Skip "ban lifetime" / bait codes)
                                 </label>
@@ -137,6 +146,9 @@
                 <button class="btn btn-secondary btn-large" id="server-sniper-btn" onclick="toggleServerSniper()">
                     🖥️ Start 24/7 Server Sniper
                 </button>
+                <button class="btn btn-secondary btn-large" onclick="manualSave()" title="Explicitly save all settings">
+                    <span id="save-btn-text">💾 Save Settings</span>
+                </button>
             </div>
         </div>
     </div>
@@ -148,6 +160,7 @@
                 <span class="logo-icon-sm">⚡</span>
                 <h2>SpyHub Sniper</h2>
                 <span class="status-badge" id="status-badge">CONNECTING...</span>
+                <span id="save-indicator-sniper" class="save-indicator-mini">✓ Saved</span>
             </div>
             <div class="header-right">
                 <button class="btn btn-sm" onclick="runBenchmark()">🏎️ Benchmark</button>
@@ -192,6 +205,22 @@
                     </div>
 
                     <div class="redeem-status" id="redeem-status"></div>
+
+                    <!-- Millisecond Speed Breakdown -->
+                    <div class="speed-breakdown" id="speed-breakdown">
+                        <div class="speed-item">
+                            <span class="speed-label">📋 Copy (Clipboard)</span>
+                            <span class="speed-val" id="speed-copy">-ms</span>
+                        </div>
+                        <div class="speed-item">
+                            <span class="speed-label">🌐 Redeem (HTTP)</span>
+                            <span class="speed-val" id="speed-redeem">-ms</span>
+                        </div>
+                        <div class="speed-item total">
+                            <span class="speed-label">⚡ Total Snipe</span>
+                            <span class="speed-val" id="speed-total">-ms</span>
+                        </div>
+                    </div>
 
                     <div class="quick-actions">
                         <button class="btn btn-sm" onclick="pasteFromClipboard()">📋 Paste</button>
