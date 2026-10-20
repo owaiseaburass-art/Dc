@@ -23,6 +23,7 @@ const MAX_RECONNECTS = 5;
 let config = {
     token: '',
     channelId: '',
+    channelIds: [],
     guildId: '',
     codePrefix: 'SPY-',
     codeRegex: null,
@@ -41,6 +42,9 @@ let stats = {
 let history = [];
 let seenCodes = new Set();
 let recentMessagesBuffer = []; // buffer to inspect context around codes
+
+// Prefire auto-trigger patterns (ready? / ping / countdown)
+const PREFIRE_TRIGGER_PATTERNS = /\b(ready\??|get\s*ready|incoming|drop\s*in|@here|@everyone|countdown|giveaway\s*start|code\s*drop|dropping\s*(now|soon))\b/i;
 
 // ============================================
 // Setup & Init
@@ -78,6 +82,7 @@ async function loadConfig() {
     if (c) {
         document.getElementById('discord-token').value = c.token || '';
         document.getElementById('channel-id').value = c.channelId || '';
+        config.channelIds = (c.channelId || '').split(/[\s,]+/).filter(id => id.length > 0);
         document.getElementById('guild-id').value = c.guildId || '';
         document.getElementById('code-prefix').value = c.codePrefix || 'SPY-';
         document.getElementById('code-regex').value = c.codeRegex || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}';
@@ -96,6 +101,7 @@ async function loadConfig() {
 function saveConfig() {
     config.token = document.getElementById('discord-token').value.trim();
     config.channelId = document.getElementById('channel-id').value.trim();
+    config.channelIds = config.channelId.split(/[\s,]+/).filter(id => id.length > 0);
     config.guildId = document.getElementById('guild-id').value.trim();
     config.codePrefix = document.getElementById('code-prefix').value.trim();
     config.autoRedeem = document.getElementById('auto-redeem').checked;
@@ -359,17 +365,23 @@ function handleDispatch(eventName, data) {
             addSystemMsg(`Connected as ${user.username}#${user.discriminator || '0'}`, 'success');
             updateStatus('CONNECTED', 'connected');
             
-            // extract channel name from READY payload guilds if available
-            let channelName = config.channelId;
-            if (data.guilds) {
+            // extract channel names from READY payload guilds if available
+            let channelNames = [];
+            if (data.guilds && config.channelIds.length > 0) {
                 for (const g of data.guilds) {
                     if (g.channels) {
-                        const ch = g.channels.find(c => c.id === config.channelId);
-                        if (ch) { channelName = ch.name; break; }
+                        for (const targetId of config.channelIds) {
+                            const ch = g.channels.find(c => c.id === targetId);
+                            if (ch) channelNames.push(`#${ch.name}`);
+                        }
                     }
                 }
             }
-            document.getElementById('channel-name').textContent = `#${channelName}`;
+            if (channelNames.length > 0) {
+                document.getElementById('channel-name').textContent = channelNames.join(', ');
+            } else {
+                document.getElementById('channel-name').textContent = config.channelIds.length > 1 ? `${config.channelIds.length} channels` : `#${config.channelId}`;
+            }
             break;
 
         case 'MESSAGE_CREATE':
@@ -419,11 +431,14 @@ function testConnection() {
         return;
     }
 
-    if (!/^\d{17,20}$/.test(channelId)) {
-        log('⚠ Channel ID looks wrong (should be 17-20 digits)', 't-warn');
-    } else {
-        log(`✓ Channel ID format OK: ${channelId}`, 't-ok');
-    }
+    const channelIdsList = channelId.split(/[\s,]+/).filter(id => id.length > 0);
+    channelIdsList.forEach(id => {
+        if (!/^\d{17,20}$/.test(id)) {
+            log(`⚠ Channel ID "${id}" looks wrong (should be 17-20 digits)`, 't-warn');
+        } else {
+            log(`✓ Channel ID format OK: ${id}`, 't-ok');
+        }
+    });
 
     if (guildId && !/^\d{17,20}$/.test(guildId)) {
         log('⚠ Guild ID looks wrong (should be 17-20 digits)', 't-warn');
@@ -688,8 +703,12 @@ function isTrapContext(currentContent) {
 }
 
 function handleMessage(msg, isEdit = false) {
-    // only process messages from the target channel
-    if (msg.channel_id !== config.channelId) return;
+    // only process messages from monitored target channels
+    const isTargetChannel = config.channelIds.length > 0 
+        ? config.channelIds.includes(msg.channel_id)
+        : msg.channel_id === config.channelId;
+
+    if (!isTargetChannel) return;
 
     stats.messages++;
     updateStat('stat-messages', stats.messages);
@@ -698,6 +717,14 @@ function handleMessage(msg, isEdit = false) {
     const author = msg.author ? (msg.author.username || 'Unknown') : 'Unknown';
     const timestamp = msg.timestamp ? new Date(msg.timestamp) : new Date();
     const timeStr = timestamp.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
+    // Auto-prefire trigger: detect "ready?" / @here / @everyone / countdown messages
+    if (PREFIRE_TRIGGER_PATTERNS.test(content)) {
+        addSystemMsg(`🎯 DROP INCOMING — "${content.substring(0, 60)}" from ${author}`, 'success');
+        if (!isPrefireVisible) showPrefire();
+        updateStatus('🎯 DROP INCOMING', 'connected');
+        if (config.soundAlert) playPrefireAlert();
+    }
 
     // scan for codes
     config.codeRegex.lastIndex = 0; // reset regex state
@@ -730,8 +757,11 @@ function handleMessage(msg, isEdit = false) {
             codeInput.value = code;
             codeInput.classList.add('has-code');
 
+            // Track snipe timing
+            const snipeDetectTime = Date.now();
+
             if (config.autoRedeem) {
-                redeemCode(code);
+                redeemCode(code, snipeDetectTime);
             } else {
                 setRedeemStatus('Code captured! Click Redeem or it\'s loaded in prefire.', 'pending');
             }
@@ -816,7 +846,7 @@ function addSystemMsg(text, cls = '') {
 // Code Redemption
 // ============================================
 
-async function redeemCode(code) {
+async function redeemCode(code, snipeDetectTime) {
     if (!code) {
         code = document.getElementById('redeem-code-input').value.trim();
     }
@@ -827,7 +857,7 @@ async function redeemCode(code) {
     btn.textContent = 'Redeeming...';
     setRedeemStatus('Submitting code...', 'pending');
 
-    const snipeTime = Date.now();
+    const snipeTime = snipeDetectTime || Date.now();
     
     try {
         // Method 1: try SpyHub API directly if we have a cookie/session
@@ -1298,10 +1328,208 @@ function clearAfkLogs() {
 }
 
 // ============================================
+// Audio: Prefire Alert (distinct rapid chirps)
+// ============================================
+
+function playPrefireAlert() {
+    try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+
+        // rapid ascending chirps — attention-grabbing "incoming" sound
+        [0, 0.12, 0.24, 0.36].forEach((offset, i) => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.type = 'square';
+            osc.frequency.setValueAtTime(600 + i * 200, ctx.currentTime + offset);
+            gain.gain.setValueAtTime(0.25, ctx.currentTime + offset);
+            gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + offset + 0.1);
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + offset);
+            osc.stop(ctx.currentTime + offset + 0.1);
+        });
+    } catch (e) {}
+}
+
+// ============================================
+// Server-Side Sniper Controls (API calls)
+// ============================================
+
+let serverSniperRunning = false;
+let sseSource = null;
+
+async function startServerSniper() {
+    try {
+        const resp = await fetch('/api/sniper/start', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success) {
+            serverSniperRunning = true;
+            addSystemMsg('🖥️ Server-side sniper started! Runs 24/7 even with browser closed.', 'success');
+            updateServerSniperUI();
+            connectSSE();
+        } else {
+            addSystemMsg(`Server sniper: ${data.message || 'Failed'}`, 'error');
+        }
+    } catch (e) {
+        addSystemMsg('Failed to reach server API: ' + e.message, 'error');
+    }
+}
+
+async function stopServerSniper() {
+    try {
+        await fetch('/api/sniper/stop', { method: 'POST' });
+        serverSniperRunning = false;
+        addSystemMsg('🛑 Server-side sniper stopped.', 'error');
+        updateServerSniperUI();
+        if (sseSource) { sseSource.close(); sseSource = null; }
+    } catch (e) {
+        addSystemMsg('Failed to stop server sniper: ' + e.message, 'error');
+    }
+}
+
+function toggleServerSniper() {
+    if (serverSniperRunning) {
+        stopServerSniper();
+    } else {
+        startServerSniper();
+    }
+}
+
+function updateServerSniperUI() {
+    const btn = document.getElementById('server-sniper-btn');
+    if (!btn) return;
+    if (serverSniperRunning) {
+        btn.textContent = '🛑 Stop Server Sniper';
+        btn.className = 'btn btn-danger';
+    } else {
+        btn.textContent = '🖥️ Start 24/7 Server Sniper';
+        btn.className = 'btn btn-secondary';
+    }
+}
+
+// SSE: live events from server-side sniper
+function connectSSE() {
+    if (sseSource) sseSource.close();
+
+    sseSource = new EventSource('/api/sniper/events');
+
+    sseSource.onmessage = (event) => {
+        try {
+            const data = JSON.parse(event.data);
+            handleSSEEvent(data);
+        } catch (e) {}
+    };
+
+    sseSource.onerror = () => {
+        // auto-reconnects
+    };
+}
+
+function handleSSEEvent(data) {
+    switch (data.type) {
+        case 'init':
+            serverSniperRunning = data.state?.running || false;
+            updateServerSniperUI();
+            if (data.state?.stats) {
+                const s = data.state.stats;
+                updateStat('stat-messages', s.messages);
+                updateStat('stat-codes', s.codes);
+                updateStat('stat-redeemed', s.redeemed);
+            }
+            break;
+
+        case 'log':
+            addSystemMsg(`[SRV] ${data.msg}`, data.level === 'error' ? 'error' : data.level === 'success' ? 'success' : '');
+            break;
+
+        case 'message':
+            // show server-detected messages in feed
+            const ts = data.timestamp ? new Date(data.timestamp).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '';
+            addMessage(data.author || '?', ts, data.content || '', false);
+            break;
+
+        case 'code_found':
+            addCodeMessage(data.author || '?', new Date().toLocaleTimeString('en-GB'), data.content || '', data.code, false);
+            stats.codes++;
+            updateStat('stat-codes', stats.codes);
+            if (config.soundAlert) playAlert();
+            // fill prefire
+            const ci = document.getElementById('redeem-code-input');
+            if (ci) { ci.value = data.code; ci.classList.add('has-code'); }
+            break;
+
+        case 'trap':
+            addTrapMessage(data.author || '?', new Date().toLocaleTimeString('en-GB'), data.content || '', data.code, false);
+            addSystemMsg(`🛡️ [SRV] TRAP BLOCKED: ${data.code}`, 'error');
+            break;
+
+        case 'redeem':
+            if (data.status === 'redeemed') {
+                stats.redeemed++;
+                updateStat('stat-redeemed', stats.redeemed);
+                addHistoryItem(data.code, 'sniped', Date.now());
+                if (config.soundAlert) playSuccess();
+                setRedeemStatus(`✅ Server redeemed: ${data.code} (${data.ms}ms)`, 'success');
+                // update latency display
+                document.getElementById('stat-latency').textContent = `${data.ms}ms`;
+            } else {
+                addHistoryItem(data.code, 'failed', Date.now());
+                setRedeemStatus(`❌ Server redeem failed: ${data.code} (${data.ms}ms)`, 'error');
+            }
+            break;
+
+        case 'prefire_trigger':
+            addSystemMsg(`🎯 [SRV] DROP INCOMING — "${(data.content || '').substring(0, 60)}" from ${data.author}`, 'success');
+            if (!isPrefireVisible) showPrefire();
+            if (config.soundAlert) playPrefireAlert();
+            break;
+
+        case 'status':
+            updateStatus(data.status, data.status === 'CONNECTED' ? 'connected' : data.status === 'AUTH_FAILED' || data.status === 'FAILED' ? 'error' : '');
+            serverSniperRunning = (data.status === 'CONNECTED' || data.status === 'CONNECTING' || data.status === 'RECONNECTING');
+            updateServerSniperUI();
+            break;
+    }
+}
+
+// Speed Benchmark
+async function runBenchmark() {
+    addSystemMsg('🏎️ Running speed benchmark...', '');
+    setRedeemStatus('Benchmarking snipe speed...', 'pending');
+
+    try {
+        const resp = await fetch('/api/sniper/benchmark');
+        const data = await resp.json();
+        const msg = `🏎️ Benchmark: Total ${data.total_ms}ms | Regex: ${data.regex_ms}ms | Trap Check: ${data.trap_check_ms}ms | HTTP Redeem: ${data.http_redeem_ms}ms`;
+        addSystemMsg(msg, 'success');
+        setRedeemStatus(msg, 'success');
+        document.getElementById('stat-latency').textContent = `${data.http_redeem_ms}ms`;
+    } catch (e) {
+        addSystemMsg('Benchmark failed: ' + e.message, 'error');
+        setRedeemStatus('Benchmark failed: ' + e.message, 'error');
+    }
+}
+
+// Check server sniper status on load
+async function checkServerSniperStatus() {
+    try {
+        const resp = await fetch('/api/sniper/status');
+        const data = await resp.json();
+        serverSniperRunning = data.running || false;
+        updateServerSniperUI();
+        if (serverSniperRunning) {
+            connectSSE();
+            addSystemMsg(`🖥️ Server sniper is running (${data.status}). Connected via SSE.`, 'success');
+        }
+    } catch (e) {}
+}
+
+// ============================================
 // Init on Load
 // ============================================
 
 window.addEventListener('DOMContentLoaded', () => {
     loadConfig();
+    checkServerSniperStatus();
 });
 

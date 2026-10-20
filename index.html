@@ -28,8 +28,8 @@
                             <button class="toggle-vis" onclick="toggleVis('discord-token')">👁</button>
                         </div>
                         <div class="input-group">
-                            <label for="channel-id">Channel ID to Monitor</label>
-                            <input type="text" id="channel-id" placeholder="e.g. 1234567890123456789">
+                            <label for="channel-id">Channel ID(s) to Monitor <span style="font-size:11px;color:var(--text-muted)">(comma or space separated)</span></label>
+                            <input type="text" id="channel-id" placeholder="e.g. 123456789, 987654321">
                         </div>
                         <div class="input-group">
                             <label for="guild-id">Server (Guild) ID</label>
@@ -129,10 +129,13 @@
             <!-- Bottom Floating Action Bar -->
             <div class="setup-actions">
                 <button class="btn btn-primary btn-large" onclick="startSniper()">
-                    ⚡ Start Sniper
+                    ⚡ Start Browser Sniper
                 </button>
                 <button class="btn btn-secondary btn-large" onclick="startPrefire()">
                     🎯 Launch Prefire Mode
+                </button>
+                <button class="btn btn-secondary btn-large" id="server-sniper-btn" onclick="toggleServerSniper()">
+                    🖥️ Start 24/7 Server Sniper
                 </button>
             </div>
         </div>
@@ -147,7 +150,9 @@
                 <span class="status-badge" id="status-badge">CONNECTING...</span>
             </div>
             <div class="header-right">
+                <button class="btn btn-sm" onclick="runBenchmark()">🏎️ Benchmark</button>
                 <button class="btn btn-sm" onclick="togglePrefire()">🎯 Prefire</button>
+                <button class="btn btn-sm" id="srv-toggle-btn" onclick="toggleServerSniper()">🖥️ Server</button>
                 <button class="btn btn-sm btn-danger" onclick="stopSniper()">■ Stop</button>
             </div>
         </div>
@@ -221,12 +226,16 @@
                 <span class="stat-value" id="stat-redeemed">0</span>
             </div>
             <div class="stat">
-                <span class="stat-label">Latency</span>
+                <span class="stat-label">Snipe Speed</span>
                 <span class="stat-value" id="stat-latency">-ms</span>
             </div>
             <div class="stat">
                 <span class="stat-label">Uptime</span>
                 <span class="stat-value" id="stat-uptime">00:00:00</span>
+            </div>
+            <div class="stat">
+                <span class="stat-label">Mode</span>
+                <span class="stat-value" id="stat-mode" style="font-size:11px;">BROWSER</span>
             </div>
         </div>
     </div>
