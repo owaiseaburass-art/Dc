@@ -1103,7 +1103,7 @@ async function redeemCode(code, snipeDetectTime) {
 
 async function redeemViaAPI(code) {
     try {
-        const resp = await fetch(`${SPYHUB_API}/site/giftcard/redeem`, {
+        const resp = await fetch(`${SPYHUB_API}/site/giftcard`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

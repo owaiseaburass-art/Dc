@@ -188,7 +188,7 @@ async function serverRedeemCode(code, cfg) {
             headers['Cookie'] = cfg.spyhubCookie;
         }
 
-        const result = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard/redeem', {
+        const result = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
             method: 'POST',
             headers,
             body: JSON.stringify({ code })
@@ -560,7 +560,7 @@ async function runSpeedBenchmark() {
     // Measure: HTTP request to SpyHub (cold)
     const httpStart = Date.now();
     try {
-        await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard/redeem', {
+        await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
