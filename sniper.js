@@ -66,8 +66,6 @@ function getCurrentConfigPayload() {
     const antiTrap = document.getElementById('anti-trap') ? document.getElementById('anti-trap').checked : true;
     const autoStart = document.getElementById('auto-start') ? document.getElementById('auto-start').checked : true;
     const spyhubCookie = (document.getElementById('spyhub-cookie')?.value || '').trim();
-    const afkTokens = (document.getElementById('afk-tokens')?.value || '').trim();
-    const afkStatusText = (document.getElementById('afk-status-text')?.value || 'Active').trim();
 
     return {
         token,
@@ -80,8 +78,6 @@ function getCurrentConfigPayload() {
         antiTrap,
         autoStart,
         spyhubCookie,
-        afkTokens,
-        afkStatusText,
         history: history.slice(0, 50),
         stats: stats
     };
@@ -143,14 +139,6 @@ function applyConfigToUI(c) {
         const el = document.getElementById('spyhub-cookie');
         if (el) el.value = c.spyhubCookie;
         config.spyhubCookie = c.spyhubCookie;
-    }
-    if (c.afkTokens !== undefined) {
-        const el = document.getElementById('afk-tokens');
-        if (el) el.value = c.afkTokens;
-    }
-    if (c.afkStatusText !== undefined) {
-        const el = document.getElementById('afk-status-text');
-        if (el) el.value = c.afkStatusText;
     }
     return true;
 }
@@ -305,12 +293,6 @@ async function loadConfig() {
 
     flashSaveIndicator('✓ Loaded saved settings');
 
-    if (c.afkTokens && c.afkTokens.trim().length > 15) {
-        setTimeout(() => {
-            startAfkSpoofer(true);
-        }, 1200);
-    }
-
     // Attach listeners so ANY input automatically saves to both localStorage and server
     setupAutoSaveListeners();
 }
@@ -367,12 +349,6 @@ function checkTokenAutoStart() {
         addSystemMsg('🚀 Token & Channel detected! Auto-running background sniper...', 'success');
         startSniper(true);
     }
-
-    // Auto-run AFK spoofer whenever AFK tokens are entered
-    const afkTokens = document.getElementById('afk-tokens')?.value.trim();
-    if (afkTokens && afkTokens.length > 20 && activeAfkClients.length === 0) {
-        startAfkSpoofer(true);
-    }
 }
 
 function saveConfig() {
@@ -398,9 +374,6 @@ function saveConfig() {
         config.codeRegex = new RegExp('SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+', 'gi');
     }
 
-    const afkTokensVal = document.getElementById('afk-tokens')?.value || '';
-    const afkStatusVal = document.getElementById('afk-status-text')?.value || 'Active';
-
     const payload = {
         token: config.token,
         channelId: config.channelId,
@@ -413,8 +386,6 @@ function saveConfig() {
         autoStart: autoStartVal,
         prefireMode: prefireModeVal,
         spyhubCookie: config.spyhubCookie,
-        afkTokens: afkTokensVal,
-        afkStatusText: afkStatusVal,
         history: history.slice(0, 50),
         stats: stats
     };
@@ -669,7 +640,7 @@ function identify() {
                     client_event_source: null
                 },
                 presence: {
-                    status: 'online',
+                    status: 'invisible',
                     since: 0,
                     activities: [],
                     afk: false
@@ -859,7 +830,7 @@ function testConnection() {
                             client_build_number: 250484,
                             client_event_source: null
                         },
-                        presence: { status: 'online', since: 0, activities: [], afk: false },
+                        presence: { status: 'invisible', since: 0, activities: [], afk: false },
                         compress: false,
                         client_state: { guild_versions: {} }
                     }
@@ -1577,235 +1548,6 @@ document.addEventListener('keydown', (e) => {
         stopSniper();
     }
 });
-
-// ============================================
-// 24/7 AFK Discord Online Spoofer Manager
-// ============================================
-
-class DiscordAfkClient {
-    constructor(token, customStatus, logCallback) {
-        this.token = token.trim();
-        this.customStatus = customStatus || 'Active';
-        this.log = logCallback;
-        this.ws = null;
-        this.heartbeatInterval = null;
-        this.lastSequence = null;
-        this.isActive = false;
-        this.username = 'Unknown';
-        this.reconnectTimer = null;
-    }
-
-    start() {
-        this.isActive = true;
-        this.connect();
-    }
-
-    stop() {
-        this.isActive = false;
-        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        if (this.ws) {
-            try { this.ws.close(1000); } catch(e) {}
-        }
-        this.log(`[${this.username}] Stopped.`, 'afk-warn');
-    }
-
-    connect() {
-        if (!this.isActive) return;
-
-        this.ws = new WebSocket(DISCORD_GATEWAY);
-
-        this.ws.onopen = () => {
-            // connection established
-        };
-
-        this.ws.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            if (data.s) this.lastSequence = data.s;
-
-            switch (data.op) {
-                case 10: // Hello
-                    this.startHeartbeat(data.d.heartbeat_interval);
-                    this.identify();
-                    break;
-                case 11: // Heartbeat ACK
-                    // silently healthy
-                    break;
-                case 0: // Dispatch
-                    if (data.t === 'READY') {
-                        const u = data.d.user;
-                        this.username = `${u.username}#${u.discriminator || '0'}`;
-                        this.log(`🟢 [${this.username}] ONLINE 24/7 (AFK Active)`, 'afk-ok');
-                    }
-                    break;
-                case 7: // Reconnect
-                case 9: // Invalid session
-                    if (this.ws) this.ws.close(4000);
-                    break;
-            }
-        };
-
-        this.ws.onclose = (event) => {
-            if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-            if (!this.isActive) return;
-
-            if (event.code === 4004) {
-                this.log(`🔴 [${this.username}] Auth failed (invalid token)`, 'afk-err');
-                this.isActive = false;
-                return;
-            }
-
-            this.log(`🟡 [${this.username}] Disconnected (${event.code}). Auto-reconnecting in 5s...`, 'afk-warn');
-            this.reconnectTimer = setTimeout(() => {
-                if (this.isActive) this.connect();
-            }, 5000);
-        };
-
-        this.ws.onerror = () => {
-            // error handled in onclose
-        };
-    }
-
-    startHeartbeat(interval) {
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        setTimeout(() => {
-            this.sendHeartbeat();
-        }, interval * Math.random());
-        this.heartbeatInterval = setInterval(() => {
-            this.sendHeartbeat();
-        }, interval);
-    }
-
-    sendHeartbeat() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ op: 1, d: this.lastSequence }));
-        }
-    }
-
-    identify() {
-        const isBot = this.token.startsWith('Bot ') || this.token.startsWith('Bearer ');
-        let payload;
-
-        if (isBot) {
-            payload = {
-                op: 2,
-                d: {
-                    token: this.token,
-                    intents: 1, // GUILDS
-                    properties: { os: 'windows', browser: 'discord.js', device: 'discord.js' },
-                    presence: {
-                        status: 'online',
-                        afk: false
-                    }
-                }
-            };
-        } else {
-            payload = {
-                op: 2,
-                d: {
-                    token: this.token,
-                    capabilities: 16381,
-                    properties: {
-                        os: 'Windows',
-                        browser: 'Chrome',
-                        device: '',
-                        system_locale: 'en-US',
-                        browser_user_agent: navigator.userAgent,
-                        browser_version: navigator.userAgent.match(/Chrome\/([\d.]+)/)?.[1] || '120.0.0.0',
-                        os_version: '10',
-                        referrer: '',
-                        referring_domain: '',
-                        release_channel: 'stable',
-                        client_build_number: 250484,
-                        client_event_source: null
-                    },
-                    presence: {
-                        status: 'online',
-                        since: 0,
-                        activities: this.customStatus ? [{
-                            name: 'Custom Status',
-                            type: 4,
-                            state: this.customStatus
-                        }] : [],
-                        afk: false
-                    },
-                    compress: false,
-                    client_state: { guild_versions: {} }
-                }
-            };
-        }
-
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(payload));
-        }
-    }
-}
-
-let activeAfkClients = [];
-
-function startAfkSpoofer(silent = false) {
-    if (activeAfkClients.length > 0) return;
-
-    const raw = document.getElementById('afk-tokens')?.value || '';
-    const statusText = document.getElementById('afk-status-text')?.value || 'Active';
-    const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 10);
-
-    if (lines.length === 0) {
-        if (!silent) addAfkLog('No tokens provided! Paste one or more tokens (one per line).', 'afk-err');
-        return;
-    }
-
-    addAfkLog(`🚀 Auto-starting AFK Spoofer for ${lines.length} account(s)...`, 'afk-info');
-
-    lines.forEach((token, index) => {
-        const client = new DiscordAfkClient(token, statusText, (msg, cls) => {
-            addAfkLog(msg, cls);
-        });
-        activeAfkClients.push(client);
-        setTimeout(() => {
-            client.start();
-        }, index * 300);
-    });
-
-    const btn = document.getElementById('afk-toggle-btn');
-    if (btn) {
-        btn.textContent = `🛑 Stop AFK Spoofer (${lines.length} Running)`;
-        btn.className = 'btn btn-danger';
-    }
-}
-
-function stopAfkSpoofer() {
-    activeAfkClients.forEach(c => c.stop());
-    activeAfkClients = [];
-    const btn = document.getElementById('afk-toggle-btn');
-    if (btn) {
-        btn.textContent = '🟢 Start 24/7 AFK Spoofer';
-        btn.className = 'btn btn-secondary';
-    }
-    addAfkLog('All 24/7 AFK accounts stopped.', 'afk-warn');
-}
-
-function toggleAfkSpoofer() {
-    if (activeAfkClients.length > 0) {
-        stopAfkSpoofer();
-    } else {
-        saveConfig();
-        startAfkSpoofer(false);
-    }
-}
-
-function addAfkLog(msg, cls) {
-    const box = document.getElementById('afk-status-box');
-    if (!box) return;
-    const time = new Date().toLocaleTimeString('en-GB');
-    box.innerHTML += `<div class="${cls}">[${time}] ${msg}</div>`;
-    box.scrollTop = box.scrollHeight;
-}
-
-function clearAfkLogs() {
-    const box = document.getElementById('afk-status-box');
-    if (box) box.innerHTML = '';
-}
 
 // ============================================
 // Audio: Prefire Alert (distinct rapid chirps)

@@ -365,7 +365,7 @@ function startServerSniper() {
                                 client_event_source: null
                             },
                             presence: {
-                                status: 'online',
+                                status: 'invisible',
                                 since: 0,
                                 activities: [],
                                 afk: false
@@ -403,7 +403,7 @@ function startServerSniper() {
                                         browser_version: '120.0.0.0', os_version: '10',
                                         release_channel: 'stable', client_build_number: 250484
                                     },
-                                    presence: { status: 'online', since: 0, activities: [], afk: false },
+                                    presence: { status: 'invisible', since: 0, activities: [], afk: false },
                                     compress: false, client_state: { guild_versions: {} }
                                 }
                             };
@@ -671,9 +671,6 @@ app.post('/api/config', (req, res) => {
     try {
         const newConfig = req.body || {};
         persistServerConfig(newConfig);
-        if (newConfig.afkTokens !== undefined) {
-            syncServerAfkClients(newConfig);
-        }
         // Auto-run headless sniper on server if token and channel are present
         if (newConfig.token && newConfig.channelId && !sniperState.running) {
             console.log('[Auto-Run] Config updated with token & channels. Auto-starting server sniper...');
@@ -757,113 +754,6 @@ app.get('*', (req, res) => {
 });
 
 // ============================================
-// Server-Side 24/7 AFK Discord Spoofer
-// ============================================
-
-class ServerAfkClient {
-    constructor(token, customStatus) {
-        this.token = token.trim();
-        this.customStatus = customStatus || 'Active';
-        this.ws = null;
-        this.heartbeatInterval = null;
-        this.lastSequence = null;
-        this.isActive = false;
-        this.username = 'Unknown';
-    }
-
-    start() {
-        this.isActive = true;
-        this.connect();
-    }
-
-    stop() {
-        this.isActive = false;
-        if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-        if (this.ws) {
-            try { this.ws.close(1000); } catch(e) {}
-        }
-    }
-
-    connect() {
-        if (!this.isActive) return;
-        this.ws = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
-
-        this.ws.on('message', (raw) => {
-            try {
-                const data = JSON.parse(raw.toString());
-                if (data.s) this.lastSequence = data.s;
-
-                if (data.op === 10) {
-                    const interval = data.d.heartbeat_interval;
-                    if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-                    setTimeout(() => {
-                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                            this.ws.send(JSON.stringify({ op: 1, d: this.lastSequence }));
-                        }
-                    }, interval * Math.random());
-                    this.heartbeatInterval = setInterval(() => {
-                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                            this.ws.send(JSON.stringify({ op: 1, d: this.lastSequence }));
-                        }
-                    }, interval);
-
-                    const payload = {
-                        op: 2,
-                        d: {
-                            token: this.token,
-                            capabilities: 16381,
-                            properties: {
-                                os: 'Windows', browser: 'Chrome', device: '',
-                                system_locale: 'en-US',
-                                browser_user_agent: 'Mozilla/5.0 Chrome/120.0.0.0',
-                                browser_version: '120.0.0.0', os_version: '10',
-                                release_channel: 'stable', client_build_number: 250484
-                            },
-                            presence: {
-                                status: 'online', since: 0,
-                                activities: this.customStatus ? [{ name: 'Custom Status', type: 4, state: this.customStatus }] : [],
-                                afk: false
-                            },
-                            compress: false, client_state: { guild_versions: {} }
-                        }
-                    };
-                    this.ws.send(JSON.stringify(payload));
-                }
-
-                if (data.op === 0 && data.t === 'READY') {
-                    const u = data.d.user;
-                    this.username = `${u.username}#${u.discriminator || '0'}`;
-                    console.log(`[AFK 24/7] 🟢 Alt Account ${this.username} is ONLINE headlessly`);
-                }
-            } catch (e) {}
-        });
-
-        this.ws.on('close', (code) => {
-            if (this.heartbeatInterval) clearInterval(this.heartbeatInterval);
-            if (!this.isActive || code === 4004) return;
-            setTimeout(() => { if (this.isActive) this.connect(); }, 8000);
-        });
-
-        this.ws.on('error', () => {});
-    }
-}
-
-let serverAfkClients = [];
-function syncServerAfkClients(cfg) {
-    serverAfkClients.forEach(c => c.stop());
-    serverAfkClients = [];
-
-    const lines = (cfg.afkTokens || '').split('\n').map(l => l.trim()).filter(l => l.length > 20);
-    if (lines.length === 0) return;
-
-    console.log(`[AFK 24/7] Starting headless online spoofer for ${lines.length} alt account(s)...`);
-    lines.forEach((token, index) => {
-        const client = new ServerAfkClient(token, cfg.afkStatusText || 'Active');
-        serverAfkClients.push(client);
-        setTimeout(() => client.start(), index * 500);
-    });
-}
-
 // Keep-Alive Worker for Render 24/7
 function startKeepAliveWorker() {
     const renderUrl = process.env.RENDER_EXTERNAL_URL;
@@ -883,16 +773,13 @@ app.listen(PORT, '0.0.0.0', () => {
     console.log(`[Render] SpyHub Sniper listening on port ${PORT}`);
     startKeepAliveWorker();
 
-    // Auto-start sniper and AFK alts if config exists
+    // Auto-start sniper if config exists
     try {
         if (fs.existsSync(CONFIG_FILE)) {
             const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
             if (cfg.token && cfg.channelId) {
                 console.log('[Auto-Start] Config found with token + channels. Starting headless sniper...');
                 setTimeout(() => startServerSniper(), 1500);
-            }
-            if (cfg.afkTokens) {
-                syncServerAfkClients(cfg);
             }
         }
     } catch (e) {

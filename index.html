@@ -143,28 +143,6 @@
                         <button class="toggle-vis" onclick="toggleVis('spyhub-cookie')">👁</button>
                     </div>
                 </div>
-
-                <!-- 24/7 AFK Spoofer -->
-                <div class="card">
-                    <div class="card-header">
-                        <h2>🟢 24/7 Discord AFK Spoofer</h2>
-                    </div>
-                    <div class="input-group">
-                        <label for="afk-tokens">AFK Alt Tokens (One per line)</label>
-                        <textarea id="afk-tokens" rows="2" class="afk-textarea" placeholder="Paste alt tokens here..."></textarea>
-                    </div>
-                    <div class="input-group">
-                        <label for="afk-status-text">Custom Presence</label>
-                        <input type="text" id="afk-status-text" value="Active">
-                    </div>
-                    <div style="display:flex;gap:8px;margin-top:6px;">
-                        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="toggleAfkSpoofer()" id="afk-toggle-btn">
-                            🟢 Start AFK Spoofer
-                        </button>
-                        <button class="btn btn-sm" onclick="clearAfkLogs()">Clear</button>
-                    </div>
-                    <div id="afk-status-box" class="afk-status-box"></div>
-                </div>
             </section>
 
             <!-- Right Column: Live Background Monitor & Feed -->
@@ -263,6 +241,6 @@
         </footer>
     </div>
 
-    <script src="sniper.js?v=2.3"></script>
+    <script src="sniper.js?v=2.4"></script>
 </body>
 </html>

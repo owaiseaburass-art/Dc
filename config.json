@@ -1,5 +1,5 @@
 {
-  "token": "MTE5MDk4OTg0NjQ2NzA1OTczMg.G0yOeS.0P9wEX9TThsNRFTi4JK9MlrNJiyGvSt-Kxw_Lc",
+  "token": "MTU1MDA1NzA1NTg5OTg4NTYwMA.GA4QXb.mpq8LtA0ADvHlQz2SaAWop4m3CJeRCpk3VHKFE",
   "channelId": "1559913960637988997, 1553535422158602250, 1562175642357993582",
   "guildId": "1486820931216216186",
   "codePrefix": "SPY-",
@@ -10,7 +10,5 @@
   "autoStart": true,
   "prefireMode": true,
   "spyhubCookie": "",
-  "afkTokens": "MTE5MDk4OTg0NjQ2NzA1OTczMg.G0yOeS.0P9wEX9TThsNRFTi4JK9MlrNJiyGvSt-Kxw_Lc",
-  "afkStatusText": "Active",
   "updatedAt": 1792572118000
 }
