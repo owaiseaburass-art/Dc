@@ -1095,8 +1095,13 @@ function handleMessage(msg, isEdit = false) {
 
             // prefire: fill the code input
             const codeInput = document.getElementById('redeem-code-input');
-            codeInput.value = code;
-            codeInput.classList.add('has-code');
+            if (codeInput) {
+                codeInput.value = code;
+                codeInput.classList.add('has-code');
+            }
+
+            // Auto-copy to user's clipboard immediately
+            autoCopyToClipboard(code);
 
             // Track snipe timing
             const snipeDetectTime = Date.now();
@@ -1299,16 +1304,25 @@ async function redeemCode(code, snipeDetectTime) {
 
 async function redeemViaAPI(code) {
     try {
-        const resp = await fetch(`${SPYHUB_API}/site/giftcard`, {
+        const rawTok = (config.spyhubCookie || '').trim().replace(/^Bearer\s+/i, '');
+        const headers = {
+            'Content-Type': 'application/json',
+            'Origin': SPYHUB_BASE,
+            'Referer': `${SPYHUB_BASE}/`
+        };
+        if (rawTok) {
+            headers['Authorization'] = `Bearer ${rawTok}`;
+        }
+
+        const bodyData = { code: code.trim().toUpperCase() };
+        if (window.currentTurnstileToken) {
+            bodyData.turnstile = window.currentTurnstileToken;
+        }
+
+        const resp = await fetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Cookie': config.spyhubCookie,
-                'Origin': SPYHUB_BASE,
-                'Referer': `${SPYHUB_BASE}/`
-            },
-            credentials: 'include',
-            body: JSON.stringify({ code: code })
+            headers,
+            body: JSON.stringify(bodyData)
         });
 
         if (resp.ok) {
@@ -1322,6 +1336,45 @@ async function redeemViaAPI(code) {
         }
     } catch (e) {
         return { success: false, error: e.message };
+    }
+}
+
+async function autoCopyToClipboard(code) {
+    if (!code) return;
+    const start = Date.now();
+    let copied = false;
+
+    // 1. Try navigator.clipboard
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(code);
+            copied = true;
+        }
+    } catch (e) {}
+
+    // 2. Fallback to hidden textarea execCommand
+    if (!copied) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = code;
+            ta.style.position = 'fixed';
+            ta.style.left = '-9999px';
+            ta.style.top = '-9999px';
+            document.body.appendChild(ta);
+            ta.focus();
+            ta.select();
+            copied = document.execCommand('copy');
+            document.body.removeChild(ta);
+        } catch (e) {}
+    }
+
+    const elapsed = Date.now() - start;
+    const copySpeedEl = document.getElementById('speed-copy');
+    if (copySpeedEl) copySpeedEl.textContent = `${elapsed}ms`;
+
+    if (copied) {
+        addSystemMsg(`📋 Auto-copied "${code}" to your keyboard/clipboard in ${elapsed}ms! Hit Ctrl+V anywhere.`, 'success');
+        flashSaveIndicator(`📋 Copied: ${code}`);
     }
 }
 
@@ -1700,6 +1753,8 @@ function handleSSEEvent(data) {
             stats.codes++;
             updateStat('stat-codes', stats.codes);
             if (config.soundAlert) playAlert();
+            // Auto-copy to user's keyboard/clipboard immediately on server-detected code
+            autoCopyToClipboard(data.code);
             // fill prefire
             const ci = document.getElementById('redeem-code-input');
             if (ci) { ci.value = data.code; ci.classList.add('has-code'); }
@@ -1834,6 +1889,104 @@ async function checkServerSniperStatus() {
 }
 
 // ============================================
+// SpyHub Auth Verification & Turnstile Captcha
+// ============================================
+
+async function verifySpyHubToken() {
+    const raw = (document.getElementById('spyhub-cookie')?.value || '').trim().replace(/^Bearer\s+/i, '');
+    const statusEl = document.getElementById('spyhub-auth-status');
+    if (!raw) {
+        if (statusEl) {
+            statusEl.innerHTML = '<span style="color:var(--danger)">⚠️ Please paste your spyaj_t token first!</span>';
+        }
+        return;
+    }
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--warning)">Verifying with SpyHub API...</span>';
+    
+    try {
+        const resp = await fetch('/api/spyhub/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ token: raw })
+        });
+        const resData = await resp.json();
+        if (resData.ok && resData.data) {
+            const user = resData.data.user || {};
+            const bal = resData.data.balance !== undefined ? resData.data.balance : (resData.data.me?.balance ?? '0.00');
+            if (statusEl) {
+                statusEl.innerHTML = `<span style="color:var(--success)">✅ Logged in as <b>${user.username || 'User'}</b>! Balance: <b>$${bal}</b></span>`;
+            }
+            addSystemMsg(`✅ SpyHub Login verified as ${user.username || 'User'}! Ready to auto-claim giftcards.`, 'success');
+        } else {
+            const err = resData.data?.error || resData.error || 'Invalid or expired token';
+            if (statusEl) {
+                statusEl.innerHTML = `<span style="color:var(--danger)">❌ Refused (${resData.status || 401}): ${err}</span>`;
+            }
+            addSystemMsg(`❌ SpyHub auth refused: ${err}`, 'error');
+        }
+    } catch (e) {
+        if (statusEl) statusEl.innerHTML = `<span style="color:var(--danger)">❌ Connection error: ${e.message}</span>`;
+    }
+}
+
+let turnstileWidgetId = null;
+window.currentTurnstileToken = '';
+
+function initTurnstile() {
+    const container = document.getElementById('turnstile-widget');
+    const statusEl = document.getElementById('turnstile-status');
+    if (!container) return;
+
+    if (!window.turnstile) {
+        setTimeout(initTurnstile, 600);
+        return;
+    }
+
+    try {
+        if (turnstileWidgetId !== null) {
+            try { window.turnstile.remove(turnstileWidgetId); } catch(e) {}
+        }
+        turnstileWidgetId = window.turnstile.render(container, {
+            sitekey: '0x4AAAAAAFaKYldJmOc1NInF',
+            theme: 'dark',
+            size: 'flexible',
+            callback: (token) => {
+                window.currentTurnstileToken = token;
+                if (statusEl) {
+                    statusEl.textContent = '🟢 PRE-SOLVED (READY)';
+                    statusEl.style.color = 'var(--success)';
+                }
+                addSystemMsg('🛡️ Cloudflare Turnstile captcha pre-solved & ready in memory.', 'success');
+                fetch('/api/turnstile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ token })
+                }).catch(() => {});
+            },
+            'expired-callback': () => {
+                window.currentTurnstileToken = '';
+                if (statusEl) {
+                    statusEl.textContent = '🟡 REFRESHING...';
+                    statusEl.style.color = 'var(--warning)';
+                }
+                try { window.turnstile.reset(turnstileWidgetId); } catch(e) {}
+            },
+            'error-callback': () => {
+                if (statusEl) {
+                    statusEl.textContent = '❌ RETRYING...';
+                    statusEl.style.color = 'var(--danger)';
+                }
+                setTimeout(() => {
+                    try { window.turnstile.reset(turnstileWidgetId); } catch(e) {}
+                }, 3000);
+            }
+        });
+    } catch (e) {
+        console.warn('Turnstile init exception:', e);
+    }
+}
+
+// ============================================
 // Init on Load
 // ============================================
 
@@ -1841,5 +1994,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     await loadConfig();
     await checkServerSniperStatus();
     setInterval(updateHotChannelBadge, 1000);
+    initTurnstile();
 });
 

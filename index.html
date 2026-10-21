@@ -6,6 +6,7 @@
     <title>SpyHub Sniper</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit" async defer></script>
 </head>
 <body>
     <div class="app-layout">
@@ -131,16 +132,33 @@
                 <!-- SpyHub Auth -->
                 <div class="card">
                     <div class="card-header">
-                        <h2>🌐 SpyHub Auth</h2>
+                        <h2>🌐 SpyHub Auth & Captcha</h2>
                     </div>
-                    <a href="https://discord.com/oauth2/authorize?client_id=1539462295141228604&redirect_uri=https%3A%2F%2Fspyhub-web.spyuhq.workers.dev%2Fapi%2Fsite%2Fauth%2Fcallback&response_type=code&scope=identify+email+guilds.join&state=410341daf55c8f59d3e9142833d382ad" 
-                       target="_blank" class="btn btn-discord btn-sm">
-                        Authorize with Discord
-                    </a>
-                    <div class="input-group" style="margin-top:10px">
-                        <label for="spyhub-cookie">Session Cookie (optional)</label>
-                        <input type="password" id="spyhub-cookie" placeholder="Paste session cookie..." autocomplete="off">
+                    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px">
+                        Required to claim giftcards to your account.
+                    </div>
+                    <div class="input-group">
+                        <label for="spyhub-cookie">SpyHub Session Token <span class="muted">(spyaj_t / Bearer)</span></label>
+                        <input type="password" id="spyhub-cookie" placeholder="Paste your spyaj_t token here..." autocomplete="off">
                         <button class="toggle-vis" onclick="toggleVis('spyhub-cookie')">👁</button>
+                    </div>
+                    <div class="btn-group-row" style="margin-top:6px">
+                        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="verifySpyHubToken()">
+                            🧪 Verify SpyHub Login
+                        </button>
+                        <a href="https://spyhub.kdns.fr" target="_blank" class="btn btn-secondary btn-sm" style="flex:1">
+                            🔗 Open SpyHub
+                        </a>
+                    </div>
+                    <div id="spyhub-auth-status" class="test-results" style="margin-top:6px"></div>
+
+                    <!-- Cloudflare Turnstile Pre-Solver -->
+                    <div style="margin-top:10px;padding:8px;background:var(--bg-tertiary);border-radius:6px;border:1px solid var(--border)">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+                            <span style="font-size:11px;font-weight:600;color:var(--text-muted)">🛡️ Cloudflare Captcha Pre-Solver</span>
+                            <span id="turnstile-status" style="font-size:10px;font-weight:700;color:var(--warning)">INITIALIZING...</span>
+                        </div>
+                        <div id="turnstile-widget"></div>
                     </div>
                 </div>
             </section>
@@ -241,6 +259,6 @@
         </footer>
     </div>
 
-    <script src="sniper.js?v=2.4"></script>
+    <script src="sniper.js?v=2.5"></script>
 </body>
 </html>

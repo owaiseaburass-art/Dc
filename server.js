@@ -200,11 +200,12 @@ function isTrapContext(content) {
 // Server-Side SpyHub Redeem
 // ============================================
 
+let latestTurnstileToken = '';
+
 async function serverRedeemCode(code, cfg) {
     const snipeStart = Date.now();
     sniperLog(`⚡ Attempting server-side redeem: ${code}`);
 
-    // Try API redeem (no CORS on server!)
     try {
         const headers = {
             'Content-Type': 'application/json',
@@ -212,14 +213,26 @@ async function serverRedeemCode(code, cfg) {
             'Referer': 'https://spyhub.kdns.fr/',
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
         };
-        if (cfg.spyhubCookie) {
-            headers['Cookie'] = cfg.spyhubCookie;
+
+        const authTok = (cfg.spyhubToken || cfg.spyhubCookie || '').trim().replace(/^Bearer\s+/i, '');
+        if (authTok) {
+            headers['Authorization'] = `Bearer ${authTok}`;
+            if (authTok.includes('=')) {
+                headers['Cookie'] = authTok;
+            }
+        } else {
+            sniperLog('⚠️ [AUTH WARNING] No SpyHub token configured! Set your spyaj_t token in dashboard under SpyHub Auth.', 'warn');
+        }
+
+        const bodyData = { code: code.trim().toUpperCase() };
+        if (latestTurnstileToken) {
+            bodyData.turnstile = latestTurnstileToken;
         }
 
         const result = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
             method: 'POST',
             headers,
-            body: JSON.stringify({ code })
+            body: JSON.stringify(bodyData)
         });
 
         const elapsed = Date.now() - snipeStart;
@@ -642,6 +655,38 @@ async function runSpeedBenchmark() {
 // ============================================
 // API Routes
 // ============================================
+
+// Turnstile token update from frontend
+app.post('/api/turnstile', (req, res) => {
+    latestTurnstileToken = req.body?.token || '';
+    if (latestTurnstileToken) {
+        sniperLog('🛡️ Turnstile captcha token pre-solved & cached on server.', 'info');
+    }
+    res.json({ success: true, hasToken: !!latestTurnstileToken });
+});
+
+// Verify SpyHub token
+app.post('/api/spyhub/verify', async (req, res) => {
+    const rawToken = (req.body?.token || '').trim().replace(/^Bearer\s+/i, '');
+    if (!rawToken) {
+        return res.status(400).json({ ok: false, error: 'Token is required' });
+    }
+    try {
+        const resp = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/me', {
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${rawToken}`,
+                'Origin': 'https://spyhub.kdns.fr',
+                'Referer': 'https://spyhub.kdns.fr/',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
+            }
+        });
+        const data = JSON.parse(resp.body || '{}');
+        res.json({ ok: resp.status === 200 && !data.error, status: resp.status, data });
+    } catch (err) {
+        res.status(500).json({ ok: false, error: err.message });
+    }
+});
 
 // Health check
 app.get('/healthz', (req, res) => {

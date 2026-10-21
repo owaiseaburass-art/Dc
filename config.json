@@ -9,6 +9,57 @@
   "antiTrap": true,
   "autoStart": true,
   "prefireMode": true,
-  "spyhubCookie": "",
-  "updatedAt": 1792572118000
+  "spyhubCookie": "99437bbe68f828bbf09ca2ccceb1c1e93b04661149d188df5b32e5760dff108d",
+  "updatedAt": 1792572118000,
+  "stats": {
+    "messages": 29,
+    "codes": 6,
+    "redeemed": 0,
+    "trapsBlocked": 0
+  },
+  "recentCodes": [
+    {
+      "code": "SPY-D2E3-A96A-DF2E",
+      "status": "failed",
+      "time": "2026-10-21T13:32:37.292Z",
+      "ms": 309,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    },
+    {
+      "code": "SPY-E8C0-DF58-E98E",
+      "status": "failed",
+      "time": "2026-10-21T13:33:26.676Z",
+      "ms": 164,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    },
+    {
+      "code": "SPY-DC96-EE7F-ED07",
+      "status": "failed",
+      "time": "2026-10-21T13:33:40.487Z",
+      "ms": 129,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    },
+    {
+      "code": "SPY-A99B-9C0E-1DF5",
+      "status": "failed",
+      "time": "2026-10-21T13:33:52.353Z",
+      "ms": 245,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    },
+    {
+      "code": "SPY-44F2-D12B-30F7",
+      "status": "failed",
+      "time": "2026-10-21T13:34:01.276Z",
+      "ms": 99,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    },
+    {
+      "code": "SPY-4DE8-F595-FCEE",
+      "status": "failed",
+      "time": "2026-10-21T13:43:27.365Z",
+      "ms": 219,
+      "response": "{\"ok\":false,\"error\":\"Non connecté\"}"
+    }
+  ],
+  "spyhubToken": "99437bbe68f828bbf09ca2ccceb1c1e93b04661149d188df5b32e5760dff108d"
 }
