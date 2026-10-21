@@ -3,7 +3,7 @@
   "channelId": "1559913960637988997, 1553535422158602250, 1562175642357993582",
   "guildId": "1486820931216216186",
   "codePrefix": "SPY-",
-  "codeRegex": "SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}",
+  "codeRegex": "SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+",
   "autoRedeem": true,
   "soundAlert": true,
   "antiTrap": true,

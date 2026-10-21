@@ -155,6 +155,27 @@ body {
     border: 1px solid var(--border);
 }
 
+.hot-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    color: #ff5252;
+    background: rgba(255, 82, 82, 0.15);
+    border: 1px solid #ff5252;
+    letter-spacing: 0.3px;
+    animation: hotGlow 2s infinite ease-in-out;
+}
+
+@keyframes hotGlow {
+    0%, 100% { box-shadow: 0 0 4px rgba(255, 82, 82, 0.3); border-color: #ff5252; }
+    50% { box-shadow: 0 0 12px rgba(255, 82, 82, 0.7); border-color: #ff7b7b; }
+}
+
 /* Main Workspace Split (Left Settings | Right Live Monitor) */
 .main-workspace {
     display: grid;

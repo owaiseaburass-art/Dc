@@ -39,8 +39,36 @@ let sniperState = {
     recentCodes: [],     // last 50 codes found
     recentEvents: [],    // last 100 log lines
     startTime: null,
-    lastSnipeMs: null    // latency of last snipe attempt
+    lastSnipeMs: null,   // latency of last snipe attempt
+    monitoredChannels: [],
+    hotChannel: {
+        id: null,
+        name: null,
+        until: 0,
+        reason: null
+    }
 };
+
+let channelNameMap = {}; // channelId -> channelName
+
+function setHotChannel(channelId, reason) {
+    const chName = channelNameMap[channelId] ? `#${channelNameMap[channelId]}` : `#${channelId}`;
+    const previous = sniperState.hotChannel?.id;
+    sniperState.hotChannel = {
+        id: channelId,
+        name: chName,
+        until: Date.now() + 10 * 60 * 1000, // 10 minutes sticky focus
+        reason: reason || 'Drop Trigger'
+    };
+
+    if (previous !== channelId) {
+        sniperLog(`🔥 [HOT FOCUS] Switched to ${chName} for 10m (${reason}). Still checking all selected channels in parallel.`, 'warn');
+    } else {
+        sniperLog(`🔥 [HOT FOCUS] Refreshed 10m timer on ${chName} (${reason}).`, 'info');
+    }
+
+    pushEvent('hot_channel', sniperState.hotChannel);
+}
 
 // Restore persisted stats and codes from config.json if available
 try {
@@ -270,7 +298,7 @@ function startServerSniper() {
         return false;
     }
 
-    const codeRegex = new RegExp(cfg.codeRegex || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}', 'gi');
+    const codeRegex = new RegExp(cfg.codeRegex || '\\bSPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+\\b', 'gi');
     const antiTrap = cfg.antiTrap !== false;
     const autoRedeem = cfg.autoRedeem !== false;
 
@@ -400,6 +428,9 @@ function startServerSniper() {
                         if (d.guilds) {
                             for (const g of d.guilds) {
                                 if (g.channels) {
+                                    for (const c of g.channels) {
+                                        channelNameMap[c.id] = c.name;
+                                    }
                                     for (const tid of channelIds) {
                                         const ch = g.channels.find(c => c.id === tid);
                                         if (ch) chNames.push(`#${ch.name}`);
@@ -461,19 +492,22 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
 
     const content = msg.content || '';
     const author = msg.author ? (msg.author.username || 'Unknown') : 'Unknown';
+    const channelName = channelNameMap[msg.channel_id] ? `#${channelNameMap[msg.channel_id]}` : `#${msg.channel_id}`;
 
-    // Detect "ready" / ping triggers
-    const readyPatterns = /\b(ready\??|get\s*ready|incoming|@here|@everyone)\b/i;
-    if (readyPatterns.test(content)) {
-        sniperLog(`🎯 PREFIRE TRIGGER from ${author}: "${content.substring(0, 80)}"`, 'warn');
-        pushEvent('prefire_trigger', { author, content: content.substring(0, 200) });
+    // Detect "ready" / ping / drop triggers
+    const dropTriggers = /\b(@here|@everyone|ready\??|get\s*ready|incoming|drop|dropping|giveaway|giftcard|countdown|code\s*drop|posting\s*in)\b/i;
+    if (dropTriggers.test(content)) {
+        const triggerType = content.includes('@everyone') ? '@everyone ping' : content.includes('@here') ? '@here ping' : 'Drop trigger';
+        setHotChannel(msg.channel_id, triggerType);
+        sniperLog(`🎯 PREFIRE TRIGGER in ${channelName} from ${author}: "${content.substring(0, 80)}"`, 'warn');
+        pushEvent('prefire_trigger', { author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
     }
 
     // Detect chat messages saying the giftcard was already redeemed / claimed
     const claimedPatterns = /\b(already\s*redeemed|already\s*claimed|already\s*taken|someone\s*(already\s*)?took\s*it|i\s*claimed|i\s*redeemed|i\s*got\s*it|code\s*is\s*redeemed|it['’]s\s*redeemed|already\s*used|too\s*late)\b/i;
     if (claimedPatterns.test(content)) {
-        sniperLog(`📢 Chat confirmed code was already claimed/redeemed from ${author}: "${content.substring(0, 80)}"`, 'warn');
-        pushEvent('chat_claimed', { author, content: content.substring(0, 200) });
+        sniperLog(`📢 Chat confirmed code was already claimed/redeemed in ${channelName} from ${author}: "${content.substring(0, 80)}"`, 'warn');
+        pushEvent('chat_claimed', { author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
     }
 
     // Scan for codes
@@ -481,6 +515,8 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
     const matches = content.match(codeRegex);
 
     if (matches && matches.length > 0) {
+        setHotChannel(msg.channel_id, 'Code Drop Detected');
+
         for (const code of matches) {
             if (seenCodes.has(code)) continue;
             seenCodes.add(code);
@@ -488,8 +524,8 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
             // Anti-trap check
             if (antiTrap && isTrapContext(content)) {
                 sniperState.stats.trapsBlocked++;
-                sniperLog(`🛡️ TRAP BLOCKED: "${code}" from ${author} — context: "${content.substring(0, 100)}"`, 'warn');
-                pushEvent('trap', { code, author, content: content.substring(0, 200) });
+                sniperLog(`🛡️ TRAP BLOCKED: "${code}" from ${author} in ${channelName} — context: "${content.substring(0, 100)}"`, 'warn');
+                pushEvent('trap', { code, author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
                 // still buffer the message
                 recentMessagesBuffer.push({ author, content, time: Date.now() });
                 if (recentMessagesBuffer.length > 10) recentMessagesBuffer.shift();
@@ -497,11 +533,24 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
             }
 
             sniperState.stats.codes++;
-            sniperLog(`⚡ CODE FOUND: ${code} from ${author}`, 'success');
-            pushEvent('code_found', { code, author, content: content.substring(0, 200) });
+            sniperLog(`⚡ CODE FOUND: ${code} from ${author} in ${channelName}`, 'success');
+            pushEvent('code_found', { code, author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
 
             if (autoRedeem) {
-                serverRedeemCode(code, cfg);
+                // Execute redeem immediately, keep loop open for further codes/drops
+                serverRedeemCode(code, cfg).then(outcome => {
+                    if (!outcome || !outcome.success) {
+                        sniperLog(`🔄 Key "${code}" invalid or claimed. Standing by on ${channelName} (10m) scanning for next code...`, 'warn');
+                        pushEvent('key_failed_standby', {
+                            code,
+                            status: outcome ? outcome.status : 'failed',
+                            channel_id: msg.channel_id,
+                            channel_name: channelName
+                        });
+                    }
+                }).catch(e => {
+                    sniperLog(`❌ Redeem error for "${code}": ${e.message}. Standing by on ${channelName}...`, 'error');
+                });
             } else {
                 sniperLog(`Auto-redeem OFF. Code captured: ${code}`);
                 sniperState.recentCodes.push({
@@ -520,6 +569,7 @@ function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, c
         author,
         content: content.substring(0, 500),
         channel_id: msg.channel_id,
+        channel_name: channelName,
         timestamp: msg.timestamp
     });
 }
@@ -663,6 +713,9 @@ app.post('/api/sniper/stop', (req, res) => {
 });
 
 app.get('/api/sniper/status', (req, res) => {
+    if (sniperState.hotChannel && sniperState.hotChannel.until && Date.now() > sniperState.hotChannel.until) {
+        sniperState.hotChannel = { id: null, name: null, until: 0, reason: null };
+    }
     res.json({
         ...sniperState,
         uptime: sniperState.startTime ? Math.floor((Date.now() - sniperState.startTime) / 1000) : 0

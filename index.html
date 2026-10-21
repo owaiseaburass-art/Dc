@@ -23,6 +23,7 @@
             <div class="header-center">
                 <span class="status-badge" id="status-badge">BACKGROUND: IDLE</span>
                 <span class="channel-badge" id="channel-name">#not connected</span>
+                <span class="hot-badge" id="hot-channel-badge" style="display:none;"></span>
             </div>
 
             <div class="header-actions">
@@ -95,7 +96,7 @@
                         </div>
                         <div class="input-group" style="flex:2">
                             <label for="code-regex">Regex Pattern</label>
-                            <input type="text" id="code-regex" value="SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}">
+                            <input type="text" id="code-regex" value="SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+">
                         </div>
                     </div>
 
@@ -262,6 +263,6 @@
         </footer>
     </div>
 
-    <script src="sniper.js?v=2.2"></script>
+    <script src="sniper.js?v=2.3"></script>
 </body>
 </html>

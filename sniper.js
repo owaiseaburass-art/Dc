@@ -60,7 +60,7 @@ function getCurrentConfigPayload() {
     const channelId = (document.getElementById('channel-id')?.value || '').trim();
     const guildId = (document.getElementById('guild-id')?.value || '').trim();
     const codePrefix = (document.getElementById('code-prefix')?.value || 'SPY-').trim();
-    const codeRegex = (document.getElementById('code-regex')?.value || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}').trim();
+    const codeRegex = (document.getElementById('code-regex')?.value || 'SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+').trim();
     const autoRedeem = document.getElementById('auto-redeem') ? document.getElementById('auto-redeem').checked : true;
     const soundAlert = document.getElementById('sound-alert') ? document.getElementById('sound-alert').checked : true;
     const antiTrap = document.getElementById('anti-trap') ? document.getElementById('anti-trap').checked : true;
@@ -395,7 +395,7 @@ function saveConfig() {
     try {
         config.codeRegex = new RegExp(regexStr, 'gi');
     } catch (e) {
-        config.codeRegex = new RegExp('SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}', 'gi');
+        config.codeRegex = new RegExp('SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+', 'gi');
     }
 
     const afkTokensVal = document.getElementById('afk-tokens')?.value || '';
@@ -972,7 +972,7 @@ async function fetchOldKeyAndTest(fromPrefire = false) {
 
     let oldKey = null;
     let foundMsg = null;
-    const regexStr = document.getElementById('code-regex').value.trim() || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}';
+    const regexStr = document.getElementById('code-regex').value.trim() || 'SPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+';
     const regex = new RegExp(regexStr, 'gi');
 
     // 1. Try Discord REST API v10
@@ -1879,6 +1879,23 @@ function updateServerSniperUI(channels) {
     updateSniperUI(serverSniperRunning, serverSniperRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE', channels);
 }
 
+let hotChannel = { id: null, name: null, until: 0, reason: null };
+
+function updateHotChannelBadge() {
+    const badge = document.getElementById('hot-channel-badge');
+    if (!badge) return;
+    if (hotChannel && hotChannel.until && hotChannel.until > Date.now()) {
+        const diffSec = Math.floor((hotChannel.until - Date.now()) / 1000);
+        const m = Math.floor(diffSec / 60);
+        const s = diffSec % 60;
+        badge.style.display = 'inline-flex';
+        badge.textContent = `🔥 HOT: ${hotChannel.name} (${m}:${s.toString().padStart(2, '0')})`;
+        badge.title = `Focused on ${hotChannel.name} for 10m (${hotChannel.reason}). Checking all channels in background.`;
+    } else {
+        badge.style.display = 'none';
+    }
+}
+
 // SSE: live events from server-side sniper
 function connectSSE() {
     if (sseSource) sseSource.close();
@@ -1903,12 +1920,27 @@ function handleSSEEvent(data) {
             serverSniperRunning = data.state?.running || false;
             isConnected = serverSniperRunning;
             updateSniperUI(serverSniperRunning, serverSniperRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE', data.state?.monitoredChannels);
+            if (data.state?.hotChannel && data.state.hotChannel.until > Date.now()) {
+                hotChannel = data.state.hotChannel;
+                updateHotChannelBadge();
+            }
             if (data.state?.stats) {
                 const s = data.state.stats;
                 updateStat('stat-messages', s.messages);
                 updateStat('stat-codes', s.codes);
                 updateStat('stat-redeemed', s.redeemed);
             }
+            break;
+
+        case 'hot_channel':
+            hotChannel = data;
+            updateHotChannelBadge();
+            addSystemMsg(`🔥 [STICKY FOCUS] Locked on ${data.name} for 10m (${data.reason}). Still monitoring all selected channels in parallel.`, 'warn');
+            break;
+
+        case 'key_failed_standby':
+            addSystemMsg(`🔄 Key "${data.code}" invalid or claimed. Re-arming pipeline on ${data.channel_name} (10m focus) scanning for next code!`, 'info');
+            setRedeemStatus(`⚠️ False/Claimed Key ("${data.code}"). Standing by on ${data.channel_name} for real drop...`, 'pending');
             break;
 
         case 'log':
@@ -2021,6 +2053,10 @@ async function checkServerSniperStatus() {
             serverSniperRunning = true;
             isConnected = true;
             updateSniperUI(true, 'BACKGROUND: RUNNING', data.monitoredChannels);
+            if (data.hotChannel && data.hotChannel.until > Date.now()) {
+                hotChannel = data.hotChannel;
+                updateHotChannelBadge();
+            }
             connectSSE();
             addSystemMsg(`⚡ 24/7 Background sniper is active & running (${data.connectedAs || 'Connected'}). Monitoring channels.`, 'success');
             
@@ -2062,5 +2098,6 @@ async function checkServerSniperStatus() {
 window.addEventListener('DOMContentLoaded', async () => {
     await loadConfig();
     await checkServerSniperStatus();
+    setInterval(updateHotChannelBadge, 1000);
 });
 
