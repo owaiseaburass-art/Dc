@@ -407,9 +407,11 @@ function startServerSniper() {
                                 }
                             }
                         }
+                        sniperState.monitoredChannels = chNames.length > 0 ? chNames : channelIds.map(id => '#' + id);
                         if (chNames.length > 0) {
                             sniperLog(`Monitoring: ${chNames.join(', ')}`);
                         }
+                        pushEvent('status', { status: 'CONNECTED', user: sniperState.connectedAs, channels: sniperState.monitoredChannels });
                     }
 
                     if (t === 'MESSAGE_CREATE' || t === 'MESSAGE_UPDATE') {

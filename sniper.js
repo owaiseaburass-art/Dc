@@ -55,6 +55,203 @@ function toggleVis(inputId) {
     input.type = input.type === 'password' ? 'text' : 'password';
 }
 
+function getCurrentConfigPayload() {
+    const token = (document.getElementById('discord-token')?.value || '').trim();
+    const channelId = (document.getElementById('channel-id')?.value || '').trim();
+    const guildId = (document.getElementById('guild-id')?.value || '').trim();
+    const codePrefix = (document.getElementById('code-prefix')?.value || 'SPY-').trim();
+    const codeRegex = (document.getElementById('code-regex')?.value || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}').trim();
+    const autoRedeem = document.getElementById('auto-redeem') ? document.getElementById('auto-redeem').checked : true;
+    const soundAlert = document.getElementById('sound-alert') ? document.getElementById('sound-alert').checked : true;
+    const antiTrap = document.getElementById('anti-trap') ? document.getElementById('anti-trap').checked : true;
+    const autoStart = document.getElementById('auto-start') ? document.getElementById('auto-start').checked : true;
+    const spyhubCookie = (document.getElementById('spyhub-cookie')?.value || '').trim();
+    const afkTokens = (document.getElementById('afk-tokens')?.value || '').trim();
+    const afkStatusText = (document.getElementById('afk-status-text')?.value || 'Active').trim();
+
+    return {
+        token,
+        channelId,
+        guildId,
+        codePrefix,
+        codeRegex,
+        autoRedeem,
+        soundAlert,
+        antiTrap,
+        autoStart,
+        spyhubCookie,
+        afkTokens,
+        afkStatusText,
+        history: history.slice(0, 50),
+        stats: stats
+    };
+}
+
+function applyConfigToUI(c) {
+    if (!c || typeof c !== 'object') return false;
+
+    // Purge dummy/placeholder channel values
+    if (c.channelId === '123456') c.channelId = '';
+    if (c.guildId === '123456' || c.guildId === '1234567890123456789') c.guildId = '';
+
+    if (c.token !== undefined) {
+        const el = document.getElementById('discord-token');
+        if (el) el.value = c.token;
+        config.token = c.token;
+    }
+    if (c.channelId !== undefined) {
+        const el = document.getElementById('channel-id');
+        if (el) el.value = c.channelId;
+        config.channelId = c.channelId;
+        config.channelIds = (c.channelId || '').split(/[\s,]+/).filter(id => id.length > 0 && id !== '123456');
+    }
+    if (c.guildId !== undefined) {
+        const el = document.getElementById('guild-id');
+        if (el) el.value = c.guildId;
+        config.guildId = c.guildId;
+    }
+    if (c.codePrefix !== undefined) {
+        const el = document.getElementById('code-prefix');
+        if (el) el.value = c.codePrefix;
+        config.codePrefix = c.codePrefix;
+    }
+    if (c.codeRegex !== undefined) {
+        const el = document.getElementById('code-regex');
+        if (el) el.value = c.codeRegex;
+        try { config.codeRegex = new RegExp(c.codeRegex, 'gi'); } catch (e) {}
+    }
+    if (c.autoRedeem !== undefined) {
+        const el = document.getElementById('auto-redeem');
+        if (el) el.checked = !!c.autoRedeem;
+        config.autoRedeem = !!c.autoRedeem;
+    }
+    if (c.soundAlert !== undefined) {
+        const el = document.getElementById('sound-alert');
+        if (el) el.checked = !!c.soundAlert;
+        config.soundAlert = !!c.soundAlert;
+    }
+    if (c.antiTrap !== undefined) {
+        const el = document.getElementById('anti-trap');
+        if (el) el.checked = !!c.antiTrap;
+        config.antiTrap = !!c.antiTrap;
+    }
+    if (c.autoStart !== undefined) {
+        const el = document.getElementById('auto-start');
+        if (el) el.checked = !!c.autoStart;
+    }
+    if (c.spyhubCookie !== undefined) {
+        const el = document.getElementById('spyhub-cookie');
+        if (el) el.value = c.spyhubCookie;
+        config.spyhubCookie = c.spyhubCookie;
+    }
+    if (c.afkTokens !== undefined) {
+        const el = document.getElementById('afk-tokens');
+        if (el) el.value = c.afkTokens;
+    }
+    if (c.afkStatusText !== undefined) {
+        const el = document.getElementById('afk-status-text');
+        if (el) el.value = c.afkStatusText;
+    }
+    return true;
+}
+
+async function copyConfigCode() {
+    saveConfig();
+    const cfg = getCurrentConfigPayload();
+    if (!cfg.token && !cfg.channelId) {
+        alert('Please enter your Discord token or channel ID first!');
+        return;
+    }
+    const jsonStr = JSON.stringify(cfg);
+    const bytes = new TextEncoder().encode(jsonStr);
+    let bin = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+        bin += String.fromCharCode(bytes[i]);
+    }
+    const configCode = 'SPYCFG_' + btoa(bin);
+
+    let copied = false;
+    try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(configCode);
+            copied = true;
+        }
+    } catch (e) {}
+
+    if (!copied) {
+        try {
+            const ta = document.createElement('textarea');
+            ta.value = configCode;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            copied = document.execCommand('copy');
+            document.body.removeChild(ta);
+        } catch (e) {}
+    }
+
+    if (copied) {
+        flashSaveIndicator('📋 Config Code Copied!');
+        addSystemMsg('📋 Config code copied to your clipboard! Keep it safe.', 'success');
+    } else {
+        prompt('Copy your config code below:', configCode);
+    }
+}
+
+async function pasteConfigCode(inputCode) {
+    let raw = inputCode;
+    if (!raw) {
+        try {
+            if (navigator.clipboard && navigator.clipboard.readText) {
+                const clip = await navigator.clipboard.readText();
+                if (clip && (clip.trim().startsWith('SPYCFG_') || clip.trim().startsWith('{'))) {
+                    raw = clip.trim();
+                }
+            }
+        } catch (e) {}
+
+        if (!raw) {
+            raw = prompt('Paste your SPYCFG_ config code or JSON settings here:');
+        }
+    }
+
+    if (!raw || !raw.trim()) return;
+    raw = raw.trim();
+
+    try {
+        let parsed = null;
+        if (raw.startsWith('{')) {
+            parsed = JSON.parse(raw);
+        } else {
+            let str = raw;
+            if (str.startsWith('SPYCFG_')) {
+                str = str.slice(7);
+            }
+            const bin = atob(str);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) {
+                bytes[i] = bin.charCodeAt(i);
+            }
+            const jsonStr = new TextDecoder().decode(bytes);
+            parsed = JSON.parse(jsonStr);
+        }
+
+        if (parsed && typeof parsed === 'object') {
+            applyConfigToUI(parsed);
+            saveConfig();
+            flashSaveIndicator('✓ Config Restored & Saved!');
+            addSystemMsg('✅ Config restored and saved permanently to browser & server!', 'success');
+            checkTokenAutoStart();
+        } else {
+            throw new Error('Parsed config is not an object');
+        }
+    } catch (err) {
+        console.error('[Config] Decode failed:', err);
+        alert('Invalid config code format. Make sure it starts with SPYCFG_ or is a valid exported config string.');
+    }
+}
+
 async function loadConfig() {
     let localConfig = null;
     let serverConfig = null;
@@ -73,68 +270,45 @@ async function loadConfig() {
         }
     } catch (e) {}
 
-    // 3. Smart Merge: combine all saved fields from both sources
-    const c = Object.assign({}, localConfig || {}, serverConfig || {});
+    // Purge dummy placeholder IDs from both sources
+    if (serverConfig && serverConfig.channelId === '123456') delete serverConfig.channelId;
+    if (localConfig && localConfig.channelId === '123456') delete localConfig.channelId;
+
+    // 3. Smart Merge: server first, localConfig SECOND so localConfig takes precedence
+    const c = Object.assign({}, serverConfig || {}, localConfig || {});
+
+    // Apply values to UI
+    applyConfigToUI(c);
 
     // If local had credentials that server didn't have, auto-sync back to server immediately
-    if (localConfig && localConfig.token && (!serverConfig || !serverConfig.token)) {
+    if (c.token) {
         fetch('/api/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(c)
+            body: JSON.stringify(getCurrentConfigPayload())
         }).catch(() => {});
     }
 
-    if (c) {
-        if (c.token) document.getElementById('discord-token').value = c.token;
-        if (c.channelId) document.getElementById('channel-id').value = c.channelId;
-        config.channelIds = (c.channelId || '').split(/[\s,]+/).filter(id => id.length > 0);
-        if (c.guildId) document.getElementById('guild-id').value = c.guildId;
-        if (c.codePrefix) document.getElementById('code-prefix').value = c.codePrefix;
-        if (c.codeRegex) document.getElementById('code-regex').value = c.codeRegex;
-        document.getElementById('auto-redeem').checked = c.autoRedeem !== false;
-        document.getElementById('sound-alert').checked = c.soundAlert !== false;
-        const antiTrapEl = document.getElementById('anti-trap');
-        if (antiTrapEl) antiTrapEl.checked = c.antiTrap !== false;
-        const autoStartEl = document.getElementById('auto-start');
-        if (autoStartEl) autoStartEl.checked = c.autoStart !== false;
-        const prefireModeEl = document.getElementById('prefire-mode');
-        if (prefireModeEl && c.prefireMode !== undefined) prefireModeEl.checked = !!c.prefireMode;
-        if (c.spyhubCookie) document.getElementById('spyhub-cookie').value = c.spyhubCookie;
-        const afkTokensEl = document.getElementById('afk-tokens');
-        if (afkTokensEl && c.afkTokens) afkTokensEl.value = c.afkTokens;
-        const afkStatusEl = document.getElementById('afk-status-text');
-        if (afkStatusEl && c.afkStatusText) afkStatusEl.value = c.afkStatusText;
+    // Restore saved snipe history
+    if (c.history && Array.isArray(c.history) && c.history.length > 0) {
+        history = c.history;
+        renderHistory();
+    }
 
-        // Restore saved snipe history
-        if (c.history && Array.isArray(c.history) && c.history.length > 0) {
-            history = c.history;
-            renderHistory();
-        }
+    // Restore saved statistics
+    if (c.stats) {
+        stats = Object.assign(stats, c.stats);
+        updateStat('stat-messages', stats.messages);
+        updateStat('stat-codes', stats.codes);
+        updateStat('stat-redeemed', stats.redeemed);
+    }
 
-        // Restore saved statistics
-        if (c.stats) {
-            stats = Object.assign(stats, c.stats);
-            updateStat('stat-messages', stats.messages);
-            updateStat('stat-codes', stats.codes);
-            updateStat('stat-redeemed', stats.redeemed);
-        }
+    flashSaveIndicator('✓ Loaded saved settings');
 
-        flashSaveIndicator('✓ Loaded saved settings');
-
-        // Auto-run if token exists: run background sniper & AFK spoofer immediately
-        if (c.token && c.channelId) {
-            addSystemMsg('🚀 Token found: Auto-running background sniper in 1s...', 'success');
-            setTimeout(() => {
-                if (!isConnected) startSniper(true);
-            }, 800);
-        }
-
-        if (c.afkTokens && c.afkTokens.trim().length > 15) {
-            setTimeout(() => {
-                startAfkSpoofer(true);
-            }, 1200);
-        }
+    if (c.afkTokens && c.afkTokens.trim().length > 15) {
+        setTimeout(() => {
+            startAfkSpoofer(true);
+        }, 1200);
     }
 
     // Attach listeners so ANY input automatically saves to both localStorage and server
@@ -189,7 +363,7 @@ function checkTokenAutoStart() {
     const channelId = document.getElementById('channel-id').value.trim();
 
     // Auto-run background sniper whenever token and channel are typed or pasted
-    if (token.length > 25 && channelId.length > 10 && !isConnected) {
+    if (token.length > 25 && channelId.length > 10 && !isConnected && !serverSniperRunning) {
         addSystemMsg('🚀 Token & Channel detected! Auto-running background sniper...', 'success');
         startSniper(true);
     }
@@ -258,36 +432,87 @@ function saveConfig() {
     flashSaveIndicator('✓ Auto-Saved to Browser & Server');
 }
 
-function toggleSniper() {
-    if (isConnected) {
-        stopSniper();
-    } else {
-        startSniper();
+function updateSniperUI(isRunning, statusText, channelsList) {
+    const badge = document.getElementById('status-badge');
+    if (badge) {
+        badge.textContent = statusText || (isRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE');
+        badge.className = 'status-badge ' + (isRunning ? 'connected' : '');
+    }
+    const mini = document.getElementById('status-badge-sniper');
+    if (mini) {
+        mini.textContent = statusText || (isRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE');
+        mini.className = 'status-badge ' + (isRunning ? 'connected' : '');
+    }
+    const btn = document.getElementById('main-sniper-btn');
+    if (btn) {
+        if (isRunning) {
+            btn.textContent = '🛑 Stop Background Sniper';
+            btn.className = 'btn btn-danger';
+        } else {
+            btn.textContent = '⚡ Start Background Sniper';
+            btn.className = 'btn btn-primary';
+        }
+    }
+    const chEl = document.getElementById('channel-name');
+    if (chEl) {
+        if (!isRunning) {
+            chEl.textContent = '#not connected';
+        } else if (channelsList && channelsList.length > 0) {
+            chEl.textContent = channelsList.join(', ');
+        } else {
+            const raw = document.getElementById('channel-id')?.value || config.channelId || '';
+            const ids = raw.split(/[\s,]+/).filter(x => x.length > 0 && x !== '123456');
+            chEl.textContent = ids.length > 0 ? `#monitoring ${ids.length} channel(s)` : '#connected';
+        }
     }
 }
 
-function startSniper(silent = false) {
+async function toggleSniper() {
+    if (serverSniperRunning || isConnected) {
+        await stopSniper();
+    } else {
+        await startSniper();
+    }
+}
+
+async function startSniper(silent = false) {
     saveConfig();
-    if (!config.token) {
+    const token = document.getElementById('discord-token')?.value?.trim();
+    const channelId = document.getElementById('channel-id')?.value?.trim();
+    if (!token) {
         if (!silent) alert('Discord token is required');
         return;
     }
-    if (!config.channelId) {
+    if (!channelId) {
         if (!silent) alert('Channel ID is required');
         return;
     }
 
+    updateSniperUI(true, 'BACKGROUND: CONNECTING...');
+    addSystemMsg('Starting 24/7 background sniper...', 'info');
+
+    try {
+        const resp = await fetch('/api/sniper/start', { method: 'POST' });
+        const data = await resp.json();
+        if (data.success || data.state?.running) {
+            serverSniperRunning = true;
+            isConnected = true;
+            updateSniperUI(true, 'BACKGROUND: RUNNING', data.state?.monitoredChannels);
+            connectSSE();
+            if (uptimeTimer) clearInterval(uptimeTimer);
+            startTime = Date.now();
+            uptimeTimer = setInterval(updateUptime, 1000);
+            addSystemMsg('🚀 24/7 Background sniper is RUNNING! Runs even with this browser closed.', 'success');
+            return;
+        }
+    } catch (e) {
+        console.warn('Backend sniper API unreachable, falling back to browser socket:', e.message);
+    }
+
+    // Fallback: direct browser socket if node server endpoint is unavailable
     startTime = Date.now();
     if (uptimeTimer) clearInterval(uptimeTimer);
     uptimeTimer = setInterval(updateUptime, 1000);
-
-    const btn = document.getElementById('main-sniper-btn');
-    if (btn) {
-        btn.textContent = '🛑 Stop Background Sniper';
-        btn.className = 'btn btn-danger';
-    }
-
-    addSystemMsg('Starting background sniper engine...', 'info');
     connectGateway();
 }
 
@@ -297,22 +522,22 @@ function startPrefire() {
     if (codeInput) codeInput.focus();
 }
 
-function stopSniper() {
+async function stopSniper() {
+    try {
+        await fetch('/api/sniper/stop', { method: 'POST' });
+    } catch (e) {}
+
     if (ws) {
         try { ws.close(1000); } catch (e) {}
+        ws = null;
     }
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     if (uptimeTimer) clearInterval(uptimeTimer);
-    
+    if (sseSource) { sseSource.close(); sseSource = null; }
+
     isConnected = false;
-    ws = null;
-    
-    updateStatus('BACKGROUND: IDLE', '');
-    const btn = document.getElementById('main-sniper-btn');
-    if (btn) {
-        btn.textContent = '⚡ Start Background Sniper';
-        btn.className = 'btn btn-primary';
-    }
+    serverSniperRunning = false;
+    updateSniperUI(false, 'BACKGROUND: IDLE');
     addSystemMsg('Background sniper stopped.', 'error');
 }
 
@@ -1650,16 +1875,8 @@ function toggleServerSniper() {
     }
 }
 
-function updateServerSniperUI() {
-    const btn = document.getElementById('server-sniper-btn');
-    if (!btn) return;
-    if (serverSniperRunning) {
-        btn.textContent = '🛑 Stop Server Sniper';
-        btn.className = 'btn btn-danger';
-    } else {
-        btn.textContent = '🖥️ Start 24/7 Server Sniper';
-        btn.className = 'btn btn-secondary';
-    }
+function updateServerSniperUI(channels) {
+    updateSniperUI(serverSniperRunning, serverSniperRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE', channels);
 }
 
 // SSE: live events from server-side sniper
@@ -1684,7 +1901,8 @@ function handleSSEEvent(data) {
     switch (data.type) {
         case 'init':
             serverSniperRunning = data.state?.running || false;
-            updateServerSniperUI();
+            isConnected = serverSniperRunning;
+            updateSniperUI(serverSniperRunning, serverSniperRunning ? 'BACKGROUND: RUNNING' : 'BACKGROUND: IDLE', data.state?.monitoredChannels);
             if (data.state?.stats) {
                 const s = data.state.stats;
                 updateStat('stat-messages', s.messages);
@@ -1759,8 +1977,9 @@ function handleSSEEvent(data) {
 
         case 'status':
             const isConn = data.status === 'CONNECTED';
-            updateStatus(isConn ? '🟢 BACKGROUND: RUNNING' : data.status, isConn ? 'connected' : data.status === 'AUTH_FAILED' || data.status === 'FAILED' ? 'error' : '');
-            serverSniperRunning = (data.status === 'CONNECTED' || data.status === 'CONNECTING' || data.status === 'RECONNECTING');
+            serverSniperRunning = isConn || data.status === 'CONNECTING';
+            isConnected = serverSniperRunning;
+            updateSniperUI(serverSniperRunning, isConn ? 'BACKGROUND: RUNNING' : data.status, data.channels);
             break;
     }
 }
@@ -1795,22 +2014,53 @@ async function runBenchmark() {
 async function checkServerSniperStatus() {
     try {
         const resp = await fetch('/api/sniper/status');
+        if (!resp.ok) return;
         const data = await resp.json();
-        serverSniperRunning = data.running || false;
-        updateServerSniperUI();
-        if (serverSniperRunning) {
+        
+        if (data.running) {
+            serverSniperRunning = true;
+            isConnected = true;
+            updateSniperUI(true, 'BACKGROUND: RUNNING', data.monitoredChannels);
             connectSSE();
-            addSystemMsg(`🖥️ Server sniper is running (${data.status}). Connected via SSE.`, 'success');
+            addSystemMsg(`⚡ 24/7 Background sniper is active & running (${data.connectedAs || 'Connected'}). Monitoring channels.`, 'success');
+            
+            if (data.startTime) {
+                startTime = data.startTime;
+                if (uptimeTimer) clearInterval(uptimeTimer);
+                uptimeTimer = setInterval(updateUptime, 1000);
+            }
+            if (data.stats) {
+                stats = Object.assign(stats, data.stats);
+                updateStat('stat-messages', stats.messages);
+                updateStat('stat-codes', stats.codes);
+                updateStat('stat-redeemed', stats.redeemed);
+            }
+        } else {
+            // If server sniper is not running yet, check if token and channel are present to auto-start!
+            const token = document.getElementById('discord-token')?.value?.trim();
+            const channelId = document.getElementById('channel-id')?.value?.trim();
+            if (token && channelId) {
+                addSystemMsg('🚀 Token & channels found: Auto-running 24/7 background sniper...', 'success');
+                startSniper(true);
+            } else {
+                updateSniperUI(false, 'BACKGROUND: IDLE');
+            }
         }
-    } catch (e) {}
+    } catch (e) {
+        const token = document.getElementById('discord-token')?.value?.trim();
+        const channelId = document.getElementById('channel-id')?.value?.trim();
+        if (token && channelId && !isConnected) {
+            startSniper(true);
+        }
+    }
 }
 
 // ============================================
 // Init on Load
 // ============================================
 
-window.addEventListener('DOMContentLoaded', () => {
-    loadConfig();
-    checkServerSniperStatus();
+window.addEventListener('DOMContentLoaded', async () => {
+    await loadConfig();
+    await checkServerSniperStatus();
 });
 

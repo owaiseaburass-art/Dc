@@ -1,4 +1,16 @@
 {
-  "token": "test_token",
-  "channelId": "123456"
+  "token": "MTE5MDk4OTg0NjQ2NzA1OTczMg.G0yOeS.0P9wEX9TThsNRFTi4JK9MlrNJiyGvSt-Kxw_Lc",
+  "channelId": "1559913960637988997, 1553535422158602250, 1562175642357993582",
+  "guildId": "1486820931216216186",
+  "codePrefix": "SPY-",
+  "codeRegex": "SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}",
+  "autoRedeem": true,
+  "soundAlert": true,
+  "antiTrap": true,
+  "autoStart": true,
+  "prefireMode": true,
+  "spyhubCookie": "",
+  "afkTokens": "MTE5MDk4OTg0NjQ2NzA1OTczMg.G0yOeS.0P9wEX9TThsNRFTi4JK9MlrNJiyGvSt-Kxw_Lc",
+  "afkStatusText": "Active",
+  "updatedAt": 1792572118000
 }
