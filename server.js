@@ -1,833 +1,537 @@
 const express = require('express');
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const WebSocket = require('ws');
-const https = require('https');
 const http = require('http');
+const WebSocket = require('ws');
+const fs = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 const CONFIG_FILE = path.join(__dirname, 'config.json');
 
-app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// Global Crash Prevention (Never crashes under any circumstances)
-process.on('uncaughtException', (err) => {
-    console.error('[CRITICAL] Uncaught exception prevented server crash:', err.message);
-});
-process.on('unhandledRejection', (reason) => {
-    console.error('[CRITICAL] Unhandled rejection prevented server crash:', reason);
-});
-
-// Ensure config file exists & load persisted state
-if (!fs.existsSync(CONFIG_FILE)) {
-    fs.writeFileSync(CONFIG_FILE, JSON.stringify({}, null, 2));
-}
-
 // ============================================
-// Shared State
+// State
 // ============================================
 
-let sniperState = {
+let sseClients = [];
+let gatewayWs = null;
+let heartbeatTimer = null;
+let lastSequence = null;
+let sessionId = null;
+let resumeGatewayUrl = null;
+let reconnectAttempts = 0;
+let seenCodes = new Set();
+let channelNameMap = {};
+
+const state = {
     running: false,
-    connectedAs: null,
     status: 'IDLE',
-    stats: { messages: 0, codes: 0, redeemed: 0, trapsBlocked: 0 },
-    recentCodes: [],     // last 50 codes found
-    recentEvents: [],    // last 100 log lines
+    user: null,
     startTime: null,
-    lastSnipeMs: null,   // latency of last snipe attempt
+    lastCopiedCode: '',
+    lastCopyTime: 0,
     monitoredChannels: [],
-    hotChannel: {
-        id: null,
-        name: null,
-        until: 0,
-        reason: null
-    }
+    stats: {
+        messages: 0,
+        codesCopied: 0
+    },
+    recentMessages: [],
+    recentCodes: []
 };
 
-let channelNameMap = {}; // channelId -> channelName
+// ============================================
+// Config Persistence
+// ============================================
 
-function setHotChannel(channelId, reason) {
-    const chName = channelNameMap[channelId] ? `#${channelNameMap[channelId]}` : `#${channelId}`;
-    const previous = sniperState.hotChannel?.id;
-    sniperState.hotChannel = {
-        id: channelId,
-        name: chName,
-        until: Date.now() + 10 * 60 * 1000, // 10 minutes sticky focus
-        reason: reason || 'Drop Trigger'
-    };
-
-    if (previous !== channelId) {
-        sniperLog(`🔥 [HOT FOCUS] Switched to ${chName} for 10m (${reason}). Still checking all selected channels in parallel.`, 'warn');
-    } else {
-        sniperLog(`🔥 [HOT FOCUS] Refreshed 10m timer on ${chName} (${reason}).`, 'info');
-    }
-
-    pushEvent('hot_channel', sniperState.hotChannel);
-}
-
-// Restore persisted stats and codes from config.json if available
-try {
-    if (fs.existsSync(CONFIG_FILE)) {
-        const savedCfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
-        if (savedCfg.stats) {
-            sniperState.stats = Object.assign(sniperState.stats, savedCfg.stats);
-        }
-        if (savedCfg.recentCodes && Array.isArray(savedCfg.recentCodes)) {
-            sniperState.recentCodes = savedCfg.recentCodes;
-        }
-    }
-} catch (e) {
-    console.error('[Config] Failed to preload persisted state:', e.message);
-}
-
-function persistServerConfig(extra = {}) {
+function loadConfig() {
     try {
-        let cur = {};
         if (fs.existsSync(CONFIG_FILE)) {
-            cur = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
+            return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
         }
-        const merged = Object.assign({}, cur, extra, {
-            stats: sniperState.stats,
-            recentCodes: sniperState.recentCodes.slice(-50)
-        });
-        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf8');
     } catch (e) {
-        console.error('[Config] Error persisting server state:', e.message);
+        console.error('[Config] Read error:', e.message);
+    }
+    return {};
+}
+
+function saveConfig(extra = {}) {
+    try {
+        const cur = loadConfig();
+        const merged = Object.assign({}, cur, extra);
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), 'utf8');
+        return merged;
+    } catch (e) {
+        console.error('[Config] Write error:', e.message);
+        return extra;
     }
 }
 
-let sniperWs = null;
-let sniperHeartbeat = null;
-let sniperLastSeq = null;
-let sniperSessionId = null;
-let sniperResumeUrl = null;
-let sniperReconnectAttempts = 0;
-const MAX_RECONNECTS = 10;
-let seenCodes = new Set();
-let recentMessagesBuffer = []; // for anti-trap context
-
-// SSE clients for live push to browser dashboard
-let sseClients = [];
+// Pre-load persisted stats
+try {
+    const initialCfg = loadConfig();
+    if (initialCfg.stats) {
+        state.stats.messages = initialCfg.stats.messages || 0;
+        state.stats.codesCopied = initialCfg.stats.codesCopied || initialCfg.stats.codes || 0;
+    }
+    if (Array.isArray(initialCfg.recentCodes)) {
+        state.recentCodes = initialCfg.recentCodes.slice(-30);
+    }
+} catch (e) {}
 
 // ============================================
-// Utility: Server-Side HTTPS Fetch
+// Native Windows Clipboard Injection (clip.exe)
 // ============================================
 
-function httpsFetch(url, options = {}) {
-    return new Promise((resolve, reject) => {
-        const parsed = new URL(url);
-        const reqOpts = {
-            hostname: parsed.hostname,
-            port: parsed.port || 443,
-            path: parsed.pathname + parsed.search,
-            method: options.method || 'GET',
-            headers: options.headers || {}
-        };
+function copyToClipboard(text) {
+    if (!text) return false;
+    const clean = text.trim();
+    state.lastCopiedCode = clean;
+    state.lastCopyTime = Date.now();
 
-        const req = https.request(reqOpts, (res) => {
-            let body = '';
-            res.on('data', (chunk) => body += chunk);
-            res.on('end', () => {
-                resolve({ status: res.statusCode, headers: res.headers, body });
-            });
-        });
+    try {
+        if (process.platform === 'win32') {
+            const clip = spawn('clip');
+            clip.stdin.write(clean);
+            clip.stdin.end();
+            clip.on('error', err => console.error('[Clipboard] clip.exe error:', err.message));
+            log(`📋 [WIN CLIPBOARD] "${clean}" instantly injected into OS clipboard via clip.exe (0ms)!`, 'success');
+        } else {
+            log(`📋 [CLIPBOARD] Code captured: "${clean}" (Ready for Ctrl+V)`, 'success');
+        }
+        return true;
+    } catch (e) {
+        console.error('[Clipboard] Failed:', e.message);
+        return false;
+    }
+}
 
-        req.on('error', reject);
-        if (options.body) req.write(options.body);
-        req.end();
+// ============================================
+// Logging & SSE Push
+// ============================================
+
+function log(msg, level = 'info') {
+    const ts = new Date().toLocaleTimeString('en-GB');
+    console.log(`[${ts}] [${level.toUpperCase()}] ${msg}`);
+    pushEvent('log', { msg, level, time: ts });
+}
+
+function pushEvent(type, data) {
+    const payload = `data: ${JSON.stringify({ type, ...data })}\n\n`;
+    sseClients.forEach(res => {
+        try {
+            res.write(payload);
+        } catch (e) {}
     });
 }
 
 // ============================================
-// Logging / SSE Push
+// 24/7 Discord Gateway Connection
 // ============================================
 
-function sniperLog(msg, level = 'info') {
-    const ts = new Date().toISOString();
-    const entry = { ts, msg, level };
-    sniperState.recentEvents.push(entry);
-    if (sniperState.recentEvents.length > 100) sniperState.recentEvents.shift();
-    console.log(`[${level.toUpperCase()}] ${msg}`);
-
-    // push to all SSE clients
-    const data = JSON.stringify({ type: 'log', ...entry });
-    for (const client of sseClients) {
-        client.write(`data: ${data}\n\n`);
-    }
-}
-
-function pushEvent(type, payload) {
-    const data = JSON.stringify({ type, ...payload });
-    for (const client of sseClients) {
-        client.write(`data: ${data}\n\n`);
-    }
-}
-
-// ============================================
-// Anti-Trap Detection (server-side mirror)
-// ============================================
-
-const TRAP_PATTERNS = [
-    /ban\s*(lifetime)?/i,
-    /lifetime\s*ban/i,
-    /trap/i,
-    /fake\s*key/i,
-    /dont\s*redeem/i,
-    /do\s*not\s*redeem/i,
-    /ban\s*code/i,
-    /blacklist/i
-];
-
-function isTrapContext(content) {
-    for (const pat of TRAP_PATTERNS) {
-        if (pat.test(content)) return true;
-    }
-    const recent = recentMessagesBuffer.slice(-3);
-    for (const item of recent) {
-        for (const pat of TRAP_PATTERNS) {
-            if (pat.test(item.content)) return true;
-        }
-    }
-    return false;
-}
-
-// ============================================
-// Server-Side SpyHub Redeem
-// ============================================
-
-let latestTurnstileToken = '';
-
-async function serverRedeemCode(code, cfg) {
-    const snipeStart = Date.now();
-    sniperLog(`⚡ Attempting server-side redeem: ${code}`);
-
-    try {
-        const headers = {
-            'Content-Type': 'application/json',
-            'Origin': 'https://spyhub.kdns.fr',
-            'Referer': 'https://spyhub.kdns.fr/',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
-        };
-
-        const authTok = (cfg.spyhubToken || cfg.spyhubCookie || '').trim().replace(/^Bearer\s+/i, '');
-        if (authTok) {
-            headers['Authorization'] = `Bearer ${authTok}`;
-            if (authTok.includes('=')) {
-                headers['Cookie'] = authTok;
-            }
-        } else {
-            sniperLog('⚠️ [AUTH WARNING] No SpyHub token configured! Set your spyaj_t token in dashboard under SpyHub Auth.', 'warn');
-        }
-
-        const bodyData = { code: code.trim().toUpperCase() };
-        if (latestTurnstileToken) {
-            bodyData.turnstile = latestTurnstileToken;
-        }
-
-        const result = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(bodyData)
-        });
-
-        const elapsed = Date.now() - snipeStart;
-        sniperState.lastSnipeMs = elapsed;
-
-        const rawLower = (result.body || '').toLowerCase();
-        const isAlreadyRedeemed = rawLower.includes('already redeemed') || 
-                                  rawLower.includes('already claimed') || 
-                                  rawLower.includes('already used') || 
-                                  rawLower.includes('has already been redeemed') ||
-                                  rawLower.includes('has been claimed') ||
-                                  rawLower.includes('already_redeemed');
-
-        let responseJson = null;
-        try { responseJson = JSON.parse(result.body); } catch(e) {}
-
-        const isSuccess = (result.status >= 200 && result.status < 300) && !isAlreadyRedeemed && (!responseJson || responseJson.success !== false);
-
-        if (isSuccess) {
-            sniperState.stats.redeemed++;
-            sniperLog(`✅ REDEEMED "${code}" in ${elapsed}ms! Response: ${result.body}`, 'success');
-            sniperState.recentCodes.push({
-                code, status: 'redeemed', time: new Date().toISOString(), ms: elapsed,
-                response: result.body.substring(0, 200)
-            });
-            persistServerConfig();
-            pushEvent('redeem', { code, status: 'redeemed', ms: elapsed, response: result.body });
-            return { success: true, status: 'redeemed', ms: elapsed };
-        } else if (isAlreadyRedeemed) {
-            sniperLog(`⚠️ GIFT CARD ALREADY REDEEMED: "${code}" was taken by someone else! (${elapsed}ms)`, 'warn');
-            sniperState.recentCodes.push({
-                code, status: 'already_redeemed', time: new Date().toISOString(), ms: elapsed,
-                response: result.body.substring(0, 200)
-            });
-            persistServerConfig();
-            pushEvent('redeem', { code, status: 'already_redeemed', ms: elapsed, reason: 'Already redeemed by someone else', response: result.body });
-            return { success: false, status: 'already_redeemed', ms: elapsed };
-        } else {
-            sniperLog(`⚠ Redeem returned ${result.status}: ${result.body.substring(0, 200)}`, 'warn');
-            sniperState.recentCodes.push({
-                code, status: 'failed', time: new Date().toISOString(), ms: elapsed,
-                response: result.body.substring(0, 200)
-            });
-            persistServerConfig();
-            pushEvent('redeem', { code, status: 'failed', ms: elapsed, response: result.body });
-            return { success: false, status: 'failed', ms: elapsed };
-        }
-    } catch (err) {
-        const elapsed = Date.now() - snipeStart;
-        sniperState.lastSnipeMs = elapsed;
-        sniperLog(`✗ Redeem error: ${err.message} (${elapsed}ms)`, 'error');
-        sniperState.recentCodes.push({
-            code, status: 'error', time: new Date().toISOString(), ms: elapsed, error: err.message
-        });
-        pushEvent('redeem', { code, status: 'error', ms: elapsed, error: err.message });
-        return { success: false, status: 'error', ms: elapsed, error: err.message };
-    }
-}
-
-// ============================================
-// Server-Side Discord Gateway Sniper
-// ============================================
-
-function startServerSniper() {
-    const cfgRaw = fs.readFileSync(CONFIG_FILE, 'utf8');
-    const cfg = JSON.parse(cfgRaw || '{}');
-
+function startGateway() {
+    const cfg = loadConfig();
     if (!cfg.token) {
-        sniperLog('No token in config. Save settings from the dashboard first.', 'error');
+        log('No Discord token configured. Set token in dashboard.', 'error');
+        state.status = 'NO_TOKEN';
+        pushEvent('status', { status: 'NO_TOKEN' });
         return false;
     }
 
     const channelIds = (cfg.channelId || '').split(/[\s,]+/).filter(id => id.length > 0);
     if (channelIds.length === 0) {
-        sniperLog('No channel IDs configured.', 'error');
+        log('No channels configured to monitor.', 'error');
+        state.status = 'NO_CHANNELS';
+        pushEvent('status', { status: 'NO_CHANNELS' });
         return false;
     }
 
-    const codeRegex = new RegExp(cfg.codeRegex || '\\bSPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+\\b', 'gi');
-    const antiTrap = cfg.antiTrap !== false;
-    const autoRedeem = cfg.autoRedeem !== false;
-
-    sniperState.running = true;
-    sniperState.status = 'CONNECTING';
-    sniperState.startTime = Date.now();
-    sniperReconnectAttempts = 0;
+    state.running = true;
+    state.status = 'CONNECTING';
+    state.startTime = Date.now();
+    reconnectAttempts = 0;
     seenCodes.clear();
-    recentMessagesBuffer = [];
 
-    sniperLog(`Starting server-side sniper. Monitoring ${channelIds.length} channel(s)...`);
+    const codeRegex = new RegExp(cfg.codeRegex || '\\bSPY-[A-Za-z0-9]{3,}(?:-[A-Za-z0-9]{3,})+\\b', 'gi');
+    const presenceStatus = cfg.presenceStatus || 'online';
+
+    log(`🚀 Starting AFK 24/7 Monitor. Watching ${channelIds.length} channel(s)... Status: [${presenceStatus.toUpperCase()}]`);
     pushEvent('status', { status: 'CONNECTING' });
 
     function connect() {
-        sniperLog('Connecting to Discord Gateway...');
-        sniperWs = new WebSocket('wss://gateway.discord.gg/?v=10&encoding=json');
+        if (!state.running) return;
 
-        sniperWs.on('open', () => {
-            sniperLog('WebSocket connected, waiting for Hello...');
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
+        heartbeatTimer = null;
+
+        const endpoint = resumeGatewayUrl || 'wss://gateway.discord.gg/?v=10&encoding=json';
+        log(`Connecting to Discord Gateway...`, 'info');
+
+        try {
+            gatewayWs = new WebSocket(endpoint);
+        } catch (err) {
+            log(`Gateway connection error: ${err.message}`, 'error');
+            scheduleReconnect();
+            return;
+        }
+
+        gatewayWs.on('open', () => {
+            log('WebSocket established. Awaiting Hello...', 'info');
         });
 
-        sniperWs.on('message', (raw) => {
-            const data = JSON.parse(raw.toString());
-            const { op, d, s, t } = data;
-            if (s) sniperLastSeq = s;
+        gatewayWs.on('message', (rawData) => {
+            let msg;
+            try {
+                msg = JSON.parse(rawData.toString());
+            } catch (e) {
+                return;
+            }
+
+            const { op, d, s, t } = msg;
+            if (s !== null && s !== undefined) lastSequence = s;
 
             switch (op) {
-                case 10: { // Hello
-                    const interval = d.heartbeat_interval;
-                    sniperLog(`Hello received. Heartbeat: ${interval}ms`);
+                case 10: { // HELLO
+                    const heartbeatInterval = d.heartbeat_interval;
+                    log(`Hello received. Heartbeat: ${heartbeatInterval}ms. Sending Identify...`, 'info');
 
-                    if (sniperHeartbeat) clearInterval(sniperHeartbeat);
+                    // Per Discord docs: first heartbeat after jitter (interval * random())
+                    // then fixed interval after that. This matches the official client exactly.
+                    const jitter = Math.floor(heartbeatInterval * Math.random());
                     setTimeout(() => {
-                        if (sniperWs && sniperWs.readyState === WebSocket.OPEN) {
-                            sniperWs.send(JSON.stringify({ op: 1, d: sniperLastSeq }));
+                        if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+                            gatewayWs.send(JSON.stringify({ op: 1, d: lastSequence }));
                         }
-                    }, interval * Math.random());
-                    sniperHeartbeat = setInterval(() => {
-                        if (sniperWs && sniperWs.readyState === WebSocket.OPEN) {
-                            sniperWs.send(JSON.stringify({ op: 1, d: sniperLastSeq }));
-                        }
-                    }, interval);
+                        heartbeatTimer = setInterval(() => {
+                            if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+                                gatewayWs.send(JSON.stringify({ op: 1, d: lastSequence }));
+                            }
+                        }, heartbeatInterval);
+                    }, jitter);
 
-                    // Identify as user token
-                    const identifyPayload = {
+                    // Send Identify with 24/7 AFK presence
+                    gatewayWs.send(JSON.stringify({
                         op: 2,
                         d: {
-                            token: cfg.token,
+                            token: cfg.token.trim(),
                             capabilities: 16381,
                             properties: {
                                 os: 'Windows',
-                                browser: 'Chrome',
-                                device: '',
-                                system_locale: 'en-US',
-                                browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                                browser_version: '120.0.0.0',
-                                os_version: '10',
-                                referrer: '',
-                                referring_domain: '',
-                                referrer_current: '',
-                                referring_domain_current: '',
+                                browser: 'Discord Client',
                                 release_channel: 'stable',
-                                client_build_number: 250484,
-                                client_event_source: null
+                                client_version: '1.0.9164',
+                                os_version: '10.0.19045',
+                                os_arch: 'x64',
+                                system_locale: 'en-US',
+                                client_build_number: 351426
                             },
                             presence: {
-                                status: 'invisible',
+                                status: presenceStatus,
                                 since: 0,
                                 activities: [],
                                 afk: false
-                            },
-                            compress: false,
-                            client_state: { guild_versions: {} }
+                            }
                         }
-                    };
-                    sniperWs.send(JSON.stringify(identifyPayload));
-                    sniperLog('Identify sent (user token)...');
+                    }));
                     break;
                 }
 
-                case 11: // Heartbeat ACK
+                case 1: { // Heartbeat request
+                    if (gatewayWs && gatewayWs.readyState === WebSocket.OPEN) {
+                        gatewayWs.send(JSON.stringify({ op: 1, d: lastSequence }));
+                    }
                     break;
+                }
 
-                case 7: // Reconnect requested
-                    sniperLog('Server requested reconnect.', 'warn');
-                    sniperWs.close(4000);
+                case 7: { // Reconnect request
+                    log('Gateway requested reconnect.', 'warn');
+                    gatewayWs.close(4000);
                     break;
+                }
 
-                case 9: // Invalid session
-                    sniperLog('Invalid session. Re-identifying in 3s...', 'warn');
-                    setTimeout(() => {
-                        if (sniperWs && sniperWs.readyState === WebSocket.OPEN) {
-                            const payload = {
-                                op: 2,
-                                d: {
-                                    token: cfg.token,
-                                    capabilities: 16381,
-                                    properties: {
-                                        os: 'Windows', browser: 'Chrome', device: '',
-                                        system_locale: 'en-US',
-                                        browser_user_agent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0',
-                                        browser_version: '120.0.0.0', os_version: '10',
-                                        release_channel: 'stable', client_build_number: 250484
-                                    },
-                                    presence: { status: 'invisible', since: 0, activities: [], afk: false },
-                                    compress: false, client_state: { guild_versions: {} }
-                                }
-                            };
-                            sniperWs.send(JSON.stringify(payload));
-                        }
-                    }, 3000);
+                case 9: { // Invalid session
+                    log('Session invalidated. Clearing session and reconnecting...', 'warn');
+                    sessionId = null;
+                    resumeGatewayUrl = null;
+                    lastSequence = null;
+                    setTimeout(connect, 3000);
                     break;
+                }
 
                 case 0: { // Dispatch
                     if (t === 'READY') {
-                        const user = d.user;
-                        sniperSessionId = d.session_id;
-                        sniperResumeUrl = d.resume_gateway_url;
-                        sniperReconnectAttempts = 0;
-                        sniperState.connectedAs = `${user.username}#${user.discriminator || '0'}`;
-                        sniperState.status = 'CONNECTED';
-                        sniperLog(`✅ Connected as ${sniperState.connectedAs}`, 'success');
-                        pushEvent('status', { status: 'CONNECTED', user: sniperState.connectedAs });
+                        sessionId = d.session_id;
+                        resumeGatewayUrl = d.resume_gateway_url;
+                        state.user = d.user;
+                        state.status = 'ONLINE_24_7';
+                        reconnectAttempts = 0;
 
-                        // Resolve channel names
-                        let chNames = [];
-                        if (d.guilds) {
-                            for (const g of d.guilds) {
-                                if (g.channels) {
-                                    for (const c of g.channels) {
-                                        channelNameMap[c.id] = c.name;
-                                    }
-                                    for (const tid of channelIds) {
-                                        const ch = g.channels.find(c => c.id === tid);
-                                        if (ch) chNames.push(`#${ch.name}`);
-                                    }
+                        const tag = `${d.user.username}#${d.user.discriminator || '0'}`;
+                        log(`✅ ONLINE 24/7 as ${tag} (ID: ${d.user.id})`, 'success');
+
+                        // Map guild channel names
+                        channelNameMap = {};
+                        if (d.guilds && Array.isArray(d.guilds)) {
+                            d.guilds.forEach(g => {
+                                if (g.channels && Array.isArray(g.channels)) {
+                                    g.channels.forEach(ch => {
+                                        if (ch.id && ch.name) channelNameMap[ch.id] = ch.name;
+                                    });
                                 }
-                            }
+                            });
                         }
-                        sniperState.monitoredChannels = chNames.length > 0 ? chNames : channelIds.map(id => '#' + id);
-                        if (chNames.length > 0) {
-                            sniperLog(`Monitoring: ${chNames.join(', ')}`);
-                        }
-                        pushEvent('status', { status: 'CONNECTED', user: sniperState.connectedAs, channels: sniperState.monitoredChannels });
+
+                        const names = channelIds.map(id => channelNameMap[id] ? `#${channelNameMap[id]}` : `#${id}`);
+                        state.monitoredChannels = names;
+                        log(`👀 Monitoring channels: ${names.join(', ')}`, 'info');
+
+                        pushEvent('ready', {
+                            user: d.user,
+                            channels: names,
+                            status: 'ONLINE_24_7',
+                            presenceStatus
+                        });
                     }
 
                     if (t === 'MESSAGE_CREATE' || t === 'MESSAGE_UPDATE') {
-                        handleServerMessage(d, channelIds, codeRegex, antiTrap, autoRedeem, cfg);
+                        handleIncomingMessage(d, channelIds, codeRegex);
                     }
                     break;
                 }
             }
         });
 
-        sniperWs.on('close', (code) => {
-            if (sniperHeartbeat) clearInterval(sniperHeartbeat);
-            sniperHeartbeat = null;
+        gatewayWs.on('close', (code) => {
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
 
-            if (!sniperState.running) return;
+            if (!state.running) {
+                state.status = 'IDLE';
+                pushEvent('status', { status: 'IDLE' });
+                return;
+            }
 
             if (code === 4004) {
-                sniperLog('Auth failed (4004) — invalid token! Update token in settings.', 'error');
-                sniperState.status = 'AUTH_FAILED';
-                sniperState.running = false;
+                log('❌ Auth failed (4004) — Invalid or expired Discord token! Update token in settings.', 'error');
+                state.status = 'AUTH_FAILED';
+                state.running = false;
                 pushEvent('status', { status: 'AUTH_FAILED' });
                 return;
             }
 
-            sniperReconnectAttempts++;
-            // Reconnect forever with capped backoff (max 25s) — NEVER stop running
-            const delay = Math.min(3000 * Math.min(sniperReconnectAttempts, 8), 25000);
-            sniperLog(`Gateway disconnected (code ${code}). Auto-reconnecting in ${delay / 1000}s... (attempt #${sniperReconnectAttempts})`, 'warn');
-            sniperState.status = 'RECONNECTING';
-            pushEvent('status', { status: 'RECONNECTING' });
-            setTimeout(connect, delay);
+            scheduleReconnect();
         });
 
-        sniperWs.on('error', (err) => {
-            sniperLog(`WebSocket error: ${err.message}`, 'error');
+        gatewayWs.on('error', (err) => {
+            log(`WebSocket error: ${err.message}`, 'error');
         });
+    }
+
+    function scheduleReconnect() {
+        if (!state.running) return;
+        reconnectAttempts++;
+        const delay = Math.min(3000 * Math.min(reconnectAttempts, 6), 20000);
+        log(`Gateway disconnected. Auto-reconnecting in ${delay / 1000}s... (attempt #${reconnectAttempts})`, 'warn');
+        state.status = 'RECONNECTING';
+        pushEvent('status', { status: 'RECONNECTING' });
+        setTimeout(connect, delay);
     }
 
     connect();
     return true;
 }
 
-function handleServerMessage(msg, channelIds, codeRegex, antiTrap, autoRedeem, cfg) {
-    if (!channelIds.includes(msg.channel_id)) return;
+function stopGateway() {
+    state.running = false;
+    state.status = 'IDLE';
+    if (heartbeatTimer) clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+    if (gatewayWs) {
+        try { gatewayWs.close(1000); } catch (e) {}
+        gatewayWs = null;
+    }
+    log('🛑 Gateway stopped. Monitor is IDLE.', 'info');
+    pushEvent('status', { status: 'IDLE' });
+}
 
-    sniperState.stats.messages++;
+// ============================================
+// Message Handling & Code Detection
+// ============================================
 
+function handleIncomingMessage(msg, channelIds, codeRegex) {
+    if (!msg || !channelIds.includes(msg.channel_id)) return;
+
+    state.stats.messages++;
     const content = msg.content || '';
     const author = msg.author ? (msg.author.username || 'Unknown') : 'Unknown';
     const channelName = channelNameMap[msg.channel_id] ? `#${channelNameMap[msg.channel_id]}` : `#${msg.channel_id}`;
+    const timestamp = msg.timestamp || new Date().toISOString();
 
-    // Detect "ready" / ping / drop triggers
+    // Check for drop triggers / owner announcements
     const dropTriggers = /\b(@here|@everyone|ready\??|get\s*ready|incoming|drop|dropping|giveaway|giftcard|countdown|code\s*drop|posting\s*in)\b/i;
-    if (dropTriggers.test(content)) {
-        const triggerType = content.includes('@everyone') ? '@everyone ping' : content.includes('@here') ? '@here ping' : 'Drop trigger';
-        setHotChannel(msg.channel_id, triggerType);
-        sniperLog(`🎯 PREFIRE TRIGGER in ${channelName} from ${author}: "${content.substring(0, 80)}"`, 'warn');
-        pushEvent('prefire_trigger', { author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
+    const isTrigger = dropTriggers.test(content);
+
+    // Save to message buffer
+    const msgObj = {
+        id: msg.id,
+        author,
+        content,
+        channel: channelName,
+        channel_id: msg.channel_id,
+        timestamp,
+        isTrigger
+    };
+
+    state.recentMessages.push(msgObj);
+    if (state.recentMessages.length > 80) state.recentMessages.shift();
+
+    // Push to UI terminal
+    pushEvent('message', msgObj);
+
+    if (isTrigger) {
+        log(`🎯 DROP ALERT in ${channelName} from ${author}: "${content.substring(0, 100)}"`, 'warn');
     }
 
-    // Detect chat messages saying the giftcard was already redeemed / claimed
-    const claimedPatterns = /\b(already\s*redeemed|already\s*claimed|already\s*taken|someone\s*(already\s*)?took\s*it|i\s*claimed|i\s*redeemed|i\s*got\s*it|code\s*is\s*redeemed|it['’]s\s*redeemed|already\s*used|too\s*late)\b/i;
-    if (claimedPatterns.test(content)) {
-        sniperLog(`📢 Chat confirmed code was already claimed/redeemed in ${channelName} from ${author}: "${content.substring(0, 80)}"`, 'warn');
-        pushEvent('chat_claimed', { author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
-    }
-
-    // Scan for codes
+    // Scan for Codes
     codeRegex.lastIndex = 0;
     const matches = content.match(codeRegex);
 
     if (matches && matches.length > 0) {
-        setHotChannel(msg.channel_id, 'Code Drop Detected');
-
         for (const code of matches) {
-            if (seenCodes.has(code)) continue;
-            seenCodes.add(code);
+            const cleanCode = code.trim().toUpperCase();
+            if (seenCodes.has(cleanCode)) continue;
+            seenCodes.add(cleanCode);
 
-            // Anti-trap check
-            if (antiTrap && isTrapContext(content)) {
-                sniperState.stats.trapsBlocked++;
-                sniperLog(`🛡️ TRAP BLOCKED: "${code}" from ${author} in ${channelName} — context: "${content.substring(0, 100)}"`, 'warn');
-                pushEvent('trap', { code, author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
-                // still buffer the message
-                recentMessagesBuffer.push({ author, content, time: Date.now() });
-                if (recentMessagesBuffer.length > 10) recentMessagesBuffer.shift();
-                continue;
-            }
+            state.stats.codesCopied++;
+            log(`⚡ CODE DETECTED: "${cleanCode}" from ${author} in ${channelName}`, 'success');
 
-            sniperState.stats.codes++;
-            sniperLog(`⚡ CODE FOUND: ${code} from ${author} in ${channelName}`, 'success');
-            pushEvent('code_found', { code, author, content: content.substring(0, 200), channel_id: msg.channel_id, channel_name: channelName });
+            // 1. INSTANT WIN32 CLIPBOARD INJECTION (0ms)
+            copyToClipboard(cleanCode);
 
-            if (autoRedeem) {
-                // Execute redeem immediately, keep loop open for further codes/drops
-                serverRedeemCode(code, cfg).then(outcome => {
-                    if (!outcome || !outcome.success) {
-                        sniperLog(`🔄 Key "${code}" invalid or claimed. Standing by on ${channelName} (10m) scanning for next code...`, 'warn');
-                        pushEvent('key_failed_standby', {
-                            code,
-                            status: outcome ? outcome.status : 'failed',
-                            channel_id: msg.channel_id,
-                            channel_name: channelName
-                        });
-                    }
-                }).catch(e => {
-                    sniperLog(`❌ Redeem error for "${code}": ${e.message}. Standing by on ${channelName}...`, 'error');
-                });
-            } else {
-                sniperLog(`Auto-redeem OFF. Code captured: ${code}`);
-                sniperState.recentCodes.push({
-                    code, status: 'captured', time: new Date().toISOString(), ms: 0
-                });
-            }
+            // 2. Save to history
+            const codeItem = {
+                code: cleanCode,
+                author,
+                channel: channelName,
+                time: new Date().toISOString()
+            };
+            state.recentCodes.push(codeItem);
+            if (state.recentCodes.length > 40) state.recentCodes.shift();
+
+            // 3. Persist stats
+            saveConfig({
+                stats: state.stats,
+                recentCodes: state.recentCodes
+            });
+
+            // 4. Push instant event to UI
+            pushEvent('code_found', {
+                code: cleanCode,
+                author,
+                channel: channelName,
+                content: content.substring(0, 150),
+                time: new Date().toLocaleTimeString('en-GB')
+            });
         }
     }
-
-    // Buffer messages for anti-trap context
-    recentMessagesBuffer.push({ author, content, time: Date.now() });
-    if (recentMessagesBuffer.length > 10) recentMessagesBuffer.shift();
-
-    // Push message to SSE for dashboard live view
-    pushEvent('message', {
-        author,
-        content: content.substring(0, 500),
-        channel_id: msg.channel_id,
-        channel_name: channelName,
-        timestamp: msg.timestamp
-    });
-}
-
-function stopServerSniper() {
-    sniperState.running = false;
-    sniperState.status = 'STOPPED';
-    if (sniperHeartbeat) clearInterval(sniperHeartbeat);
-    sniperHeartbeat = null;
-    if (sniperWs) {
-        try { sniperWs.close(1000); } catch (e) {}
-        sniperWs = null;
-    }
-    sniperLog('Server-side sniper stopped.', 'warn');
-    pushEvent('status', { status: 'STOPPED' });
 }
 
 // ============================================
-// Speed Benchmark
+// REST API Routes
 // ============================================
 
-async function runSpeedBenchmark() {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
-    const fakeCode = `SPY-TEST-${Date.now().toString(36).toUpperCase().substring(0, 4)}-BNCH`;
-    const start = Date.now();
-
-    sniperLog(`🏎️ Speed benchmark starting with fake code: ${fakeCode}`);
-
-    // Measure: regex match time
-    const regexStart = Date.now();
-    const regex = new RegExp(cfg.codeRegex || 'SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}', 'gi');
-    const matched = fakeCode.match(regex);
-    const regexMs = Date.now() - regexStart;
-
-    // Measure: anti-trap check time
-    const trapStart = Date.now();
-    const trapResult = isTrapContext('test message ' + fakeCode);
-    const trapMs = Date.now() - trapStart;
-
-    // Measure: HTTP request to SpyHub (cold)
-    const httpStart = Date.now();
-    try {
-        await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/giftcard', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'Origin': 'https://spyhub.kdns.fr',
-                'User-Agent': 'Mozilla/5.0 Chrome/120.0.0.0'
-            },
-            body: JSON.stringify({ code: fakeCode })
-        });
-    } catch (e) {}
-    const httpMs = Date.now() - httpStart;
-
-    const totalMs = Date.now() - start;
-
-    const results = {
-        total_ms: totalMs,
-        regex_ms: regexMs,
-        trap_check_ms: trapMs,
-        http_redeem_ms: httpMs,
-        code: fakeCode,
-        regex_matched: !!matched
-    };
-
-    sniperLog(`🏎️ Benchmark done! Total: ${totalMs}ms (Regex: ${regexMs}ms, Trap: ${trapMs}ms, HTTP: ${httpMs}ms)`, 'success');
-    return results;
-}
-
-// ============================================
-// API Routes
-// ============================================
-
-// Turnstile token update from frontend
-app.post('/api/turnstile', (req, res) => {
-    latestTurnstileToken = req.body?.token || '';
-    if (latestTurnstileToken) {
-        sniperLog('🛡️ Turnstile captcha token pre-solved & cached on server.', 'info');
-    }
-    res.json({ success: true, hasToken: !!latestTurnstileToken });
-});
-
-// Verify SpyHub token
-app.post('/api/spyhub/verify', async (req, res) => {
-    const rawToken = (req.body?.token || '').trim().replace(/^Bearer\s+/i, '');
-    if (!rawToken) {
-        return res.status(400).json({ ok: false, error: 'Token is required' });
-    }
-    try {
-        const resp = await httpsFetch('https://spyhub-web.spyuhq.workers.dev/api/site/me', {
-            method: 'GET',
-            headers: {
-                'Authorization': `Bearer ${rawToken}`,
-                'Origin': 'https://spyhub.kdns.fr',
-                'Referer': 'https://spyhub.kdns.fr/',
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'
-            }
-        });
-        const data = JSON.parse(resp.body || '{}');
-        res.json({ ok: resp.status === 200 && !data.error, status: resp.status, data });
-    } catch (err) {
-        res.status(500).json({ ok: false, error: err.message });
-    }
-});
-
-// Health check
-app.get('/healthz', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        uptime: process.uptime(),
-        sniper: sniperState.status,
-        stats: sniperState.stats
-    });
-});
-
-// Config GET/POST
+// Get Config
 app.get('/api/config', (req, res) => {
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const data = fs.readFileSync(CONFIG_FILE, 'utf8');
-            return res.json(JSON.parse(data || '{}'));
-        }
-        res.json({});
-    } catch (err) {
-        console.error('Error reading config:', err);
-        res.status(500).json({ error: 'Failed to read config' });
-    }
+    res.json(loadConfig());
 });
 
+// Update Config
 app.post('/api/config', (req, res) => {
     try {
-        const newConfig = req.body || {};
-        persistServerConfig(newConfig);
-        // Auto-run headless sniper on server if token and channel are present
-        if (newConfig.token && newConfig.channelId && !sniperState.running) {
-            console.log('[Auto-Run] Config updated with token & channels. Auto-starting server sniper...');
-            setTimeout(() => startServerSniper(), 500);
-        }
-        res.json({ success: true, message: 'Settings and state permanently saved' });
-    } catch (err) {
-        console.error('Error writing config:', err);
-        res.status(500).json({ error: 'Failed to save config' });
+        const updated = saveConfig(req.body || {});
+        log('Config saved.', 'info');
+        res.json({ success: true, config: updated });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
-// Server-side sniper control
-app.post('/api/sniper/redeem', async (req, res) => {
-    const { code } = req.body;
-    if (!code) return res.status(400).json({ error: 'Code is required' });
-    try {
-        const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
-        const outcome = await serverRedeemCode(code, cfg);
-        res.json(outcome);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
+// Get Live Status
+app.get('/api/status', (req, res) => {
+    res.json({
+        running: state.running,
+        status: state.status,
+        user: state.user,
+        stats: state.stats,
+        lastCopiedCode: state.lastCopiedCode,
+        monitoredChannels: state.monitoredChannels,
+        recentMessages: state.recentMessages.slice(-40),
+        recentCodes: state.recentCodes.slice(-20)
+    });
 });
 
+// Start/Stop
 app.post('/api/sniper/start', (req, res) => {
-    if (sniperState.running) {
-        return res.json({ success: false, message: 'Sniper already running', state: sniperState });
-    }
-    const ok = startServerSniper();
-    res.json({ success: ok, state: sniperState });
+    startGateway();
+    res.json({ success: true, running: state.running, status: state.status });
 });
 
 app.post('/api/sniper/stop', (req, res) => {
-    stopServerSniper();
-    res.json({ success: true, state: sniperState });
+    stopGateway();
+    res.json({ success: true, running: false, status: 'IDLE' });
 });
 
-app.get('/api/sniper/status', (req, res) => {
-    if (sniperState.hotChannel && sniperState.hotChannel.until && Date.now() > sniperState.hotChannel.until) {
-        sniperState.hotChannel = { id: null, name: null, until: 0, reason: null };
-    }
-    res.json({
-        ...sniperState,
-        uptime: sniperState.startTime ? Math.floor((Date.now() - sniperState.startTime) / 1000) : 0
-    });
+// Test Clipboard Copy
+app.post('/api/test-copy', (req, res) => {
+    const testCode = req.body?.code || 'SPY-TEST-7777-8888';
+    const copied = copyToClipboard(testCode);
+    res.json({ success: copied, code: testCode });
 });
 
-// Speed benchmark
-app.get('/api/sniper/benchmark', async (req, res) => {
-    try {
-        const results = await runSpeedBenchmark();
-        res.json(results);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// SSE endpoint for live dashboard updates
+// SSE Stream for Real-Time UI Updates
 app.get('/api/sniper/events', (req, res) => {
-    res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-        'X-Accel-Buffering': 'no'
-    });
-
-    // Send current state immediately
-    res.write(`data: ${JSON.stringify({ type: 'init', state: sniperState })}\n\n`);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
 
     sseClients.push(res);
+
+    // Initial state packet
+    res.write(`data: ${JSON.stringify({
+        type: 'init',
+        state: {
+            running: state.running,
+            status: state.status,
+            user: state.user,
+            stats: state.stats,
+            lastCopiedCode: state.lastCopiedCode,
+            monitoredChannels: state.monitoredChannels,
+            recentMessages: state.recentMessages.slice(-40),
+            recentCodes: state.recentCodes.slice(-20)
+        }
+    })}\n\n`);
 
     req.on('close', () => {
         sseClients = sseClients.filter(c => c !== res);
     });
 });
 
-// Default route
-app.get('*', (req, res) => {
-    res.sendFile(path.join(__dirname, 'index.html'));
-});
-
 // ============================================
-// Keep-Alive Worker for Render 24/7
-function startKeepAliveWorker() {
-    const renderUrl = process.env.RENDER_EXTERNAL_URL;
-    if (renderUrl) {
-        console.log(`[Keep-Alive] Active for URL: ${renderUrl}`);
-        setInterval(() => {
-            httpsFetch(`${renderUrl}/healthz`).catch(() => {});
-        }, 10 * 60 * 1000); // ping every 10 mins
-    }
-}
-
-// ============================================
-// Auto-Start Sniper on Boot (if config exists)
+// Server Start & Auto-Run
 // ============================================
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[Render] SpyHub Sniper listening on port ${PORT}`);
-    startKeepAliveWorker();
+app.listen(PORT, () => {
+    console.log(`\n========================================`);
+    console.log(`⚡ Discord Drop Monitor & Clipboard Copier`);
+    console.log(`📡 Listening on http://localhost:${PORT}`);
+    console.log(`========================================\n`);
 
-    // Auto-start sniper if config exists
-    try {
-        if (fs.existsSync(CONFIG_FILE)) {
-            const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8') || '{}');
-            if (cfg.token && cfg.channelId) {
-                console.log('[Auto-Start] Config found with token + channels. Starting headless sniper...');
-                setTimeout(() => startServerSniper(), 1500);
-            }
-        }
-    } catch (e) {
-        console.error('[Auto-Start] Error:', e.message);
+    const cfg = loadConfig();
+    if (cfg.token && cfg.channelId && cfg.autoStart !== false) {
+        log('Auto-starting 24/7 Discord Monitor...', 'info');
+        startGateway();
     }
 });
