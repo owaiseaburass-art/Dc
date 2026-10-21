@@ -3,210 +3,169 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SpyHub Key Sniper</title>
+    <title>SpyHub Sniper</title>
     <link rel="stylesheet" href="style.css">
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 <body>
-    <!-- Setup Panel (shown first) -->
-    <div id="setup-panel" class="panel">
-        <div class="setup-container">
-            <div class="logo">
-                <span class="logo-icon">⚡</span>
-                <h1>SpyHub Sniper</h1>
-                <span class="version">v1.0</span>
-                <div class="save-status-bar">
-                    <span id="save-indicator" class="save-indicator">✓ Auto-saved to Browser & Server</span>
+    <div class="app-layout">
+        <!-- Top Navigation Header -->
+        <header class="app-header">
+            <div class="header-brand">
+                <span class="brand-icon">⚡</span>
+                <div class="brand-text">
+                    <h1>SpyHub Sniper</h1>
+                    <span class="version-tag">v2.0 Headless Background</span>
                 </div>
+                <span id="save-indicator" class="save-indicator">✓ Auto-saved</span>
             </div>
-            
-            <div class="setup-grid">
-                <!-- Column 1: Discord Connection & SpyHub Auth -->
-                <div class="setup-col">
-                    <div class="setup-section">
+
+            <div class="header-center">
+                <span class="status-badge" id="status-badge">BACKGROUND: IDLE</span>
+                <span class="channel-badge" id="channel-name">#not connected</span>
+            </div>
+
+            <div class="header-actions">
+                <button class="btn btn-primary" id="main-sniper-btn" onclick="toggleSniper()">
+                    ⚡ Start Background Sniper
+                </button>
+                <button class="btn btn-secondary" onclick="runBenchmark()">🏎️ Speed Test</button>
+                <button class="btn btn-secondary" onclick="manualSave()">
+                    <span id="save-btn-text">💾 Save</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Workspace (Horizontal 2-Column Split) -->
+        <main class="main-workspace">
+            <!-- Left Column: Settings & Configuration -->
+            <section class="config-sidebar">
+                <!-- Discord Connection -->
+                <div class="card">
+                    <div class="card-header">
                         <h2>🔑 Discord Connection</h2>
-                        <div class="input-group">
-                            <label for="discord-token">Discord Token</label>
-                            <input type="password" id="discord-token" placeholder="Your discord token..." autocomplete="off">
-                            <button class="toggle-vis" onclick="toggleVis('discord-token')">👁</button>
-                        </div>
-                        <div class="input-group">
-                            <label for="channel-id">Channel ID(s) to Monitor <span style="font-size:11px;color:var(--text-muted)">(comma or space separated)</span></label>
-                            <input type="text" id="channel-id" placeholder="e.g. 123456789, 987654321">
-                        </div>
-                        <div class="input-group">
-                            <label for="guild-id">Server (Guild) ID</label>
-                            <input type="text" id="guild-id" placeholder="e.g. 1234567890123456789">
-                        </div>
-                        <div class="btn-group-row">
-                            <button class="btn btn-secondary" style="flex:1" onclick="testConnection()">
-                                🧪 Test Connection
-                            </button>
-                            <button class="btn btn-secondary" style="flex:1;border-color:var(--warning);color:var(--code-highlight)" onclick="fetchOldKeyAndTest()">
-                                🔍 Old Key Test
-                            </button>
-                        </div>
-                        <div id="test-results" class="test-results"></div>
                     </div>
-
-                    <div class="setup-section">
-                        <h2>🌐 SpyHub Auth</h2>
-                        <p class="info-text">Authorize your session with SpyHub so codes can be redeemed to your account.</p>
-                        <a href="https://discord.com/oauth2/authorize?client_id=1539462295141228604&redirect_uri=https%3A%2F%2Fspyhub-web.spyuhq.workers.dev%2Fapi%2Fsite%2Fauth%2Fcallback&response_type=code&scope=identify+email+guilds.join&state=410341daf55c8f59d3e9142833d382ad" 
-                           target="_blank" class="btn btn-discord">
-                            Authorize with Discord
-                        </a>
-                        <div class="input-group" style="margin-top:12px">
-                            <label for="spyhub-cookie">SpyHub Session Cookie (optional)</label>
-                            <input type="password" id="spyhub-cookie" placeholder="Paste session cookie..." autocomplete="off">
-                            <button class="toggle-vis" onclick="toggleVis('spyhub-cookie')">👁</button>
-                        </div>
+                    <div class="input-group">
+                        <label for="discord-token">Discord Token</label>
+                        <input type="password" id="discord-token" placeholder="Paste your token..." autocomplete="off">
+                        <button class="toggle-vis" onclick="toggleVis('discord-token')">👁</button>
                     </div>
-                </div>
-
-                <!-- Column 2: Sniper Settings & AFK Spoofer -->
-                <div class="setup-col">
-                    <div class="setup-section">
-                        <h2>🎯 Sniper & Safety Settings</h2>
-                        <div class="input-row">
-                            <div class="input-group" style="flex:1">
-                                <label for="code-prefix">Prefix</label>
-                                <input type="text" id="code-prefix" value="SPY-" placeholder="SPY-">
-                            </div>
-                            <div class="input-group" style="flex:2">
-                                <label for="code-regex">Regex Pattern</label>
-                                <input type="text" id="code-regex" value="SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}" placeholder="Pattern">
-                            </div>
-                        </div>
-
-                        <div class="checkbox-grid">
-                            <div class="checkbox-group">
-                                <label>
-                                    <input type="checkbox" id="auto-redeem" checked>
-                                    ⚡ Auto-Redeem
-                                </label>
-                            </div>
-                            <div class="checkbox-group">
-                                <label>
-                                    <input type="checkbox" id="sound-alert" checked>
-                                    🔊 Sound Alerts
-                                </label>
-                            </div>
-                            <div class="checkbox-group full-width">
-                                <label>
-                                    <input type="checkbox" id="auto-start" checked>
-                                    🚀 Auto-Start (Launch instantly when token is provided / page loads)
-                                </label>
-                            </div>
-                            <div class="checkbox-group full-width">
-                                <label>
-                                    <input type="checkbox" id="anti-trap" checked>
-                                    🛡️ Anti-Trap (Skip "ban lifetime" / bait codes)
-                                </label>
-                            </div>
-                            <div class="checkbox-group full-width">
-                                <label>
-                                    <input type="checkbox" id="prefire-mode">
-                                    🎯 Start in Prefire Mode (Split Screen)
-                                </label>
-                            </div>
-                        </div>
+                    <div class="input-group">
+                        <label for="channel-id">Channel ID(s) <span class="muted">(comma-separated)</span></label>
+                        <input type="text" id="channel-id" placeholder="e.g. 156217564..., 15599139...">
                     </div>
-
-                    <div class="setup-section">
-                        <h2>🟢 24/7 Discord AFK Spoofer</h2>
-                        <p class="info-text">Keeps secondary/alt accounts <strong>Online 24/7</strong> via lightweight headless heartbeats.</p>
-                        <div class="input-group">
-                            <label for="afk-tokens">AFK Tokens (One per line for alts)</label>
-                            <textarea id="afk-tokens" rows="2" class="afk-textarea" placeholder="Paste alt tokens here..."></textarea>
-                        </div>
-                        <div class="input-group">
-                            <label for="afk-status-text">Custom Presence Status</label>
-                            <input type="text" id="afk-status-text" placeholder="e.g. Active / Chilling" value="Active">
-                        </div>
-                        <div style="display:flex;gap:8px;margin-top:8px;">
-                            <button class="btn btn-secondary" style="flex:1" onclick="toggleAfkSpoofer()" id="afk-toggle-btn">
-                                🟢 Start 24/7 AFK Spoofer
-                            </button>
-                            <button class="btn btn-sm" onclick="clearAfkLogs()">Clear</button>
-                        </div>
-                        <div id="afk-status-box" class="afk-status-box"></div>
+                    <div class="input-group">
+                        <label for="guild-id">Server (Guild) ID <span class="muted">(optional)</span></label>
+                        <input type="text" id="guild-id" placeholder="e.g. 1234567890123456789">
                     </div>
-                </div>
-            </div>
-
-            <!-- Bottom Floating Action Bar -->
-            <div class="setup-actions">
-                <button class="btn btn-primary btn-large" onclick="startSniper()">
-                    ⚡ Start Browser Sniper
-                </button>
-                <button class="btn btn-secondary btn-large" onclick="startPrefire()">
-                    🎯 Launch Prefire Mode
-                </button>
-                <button class="btn btn-secondary btn-large" id="server-sniper-btn" onclick="toggleServerSniper()">
-                    🖥️ Start 24/7 Server Sniper
-                </button>
-                <button class="btn btn-secondary btn-large" onclick="manualSave()" title="Explicitly save all settings">
-                    <span id="save-btn-text">💾 Save Settings</span>
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Sniper Mode -->
-    <div id="sniper-panel" class="panel hidden">
-        <div class="sniper-header">
-            <div class="header-left">
-                <span class="logo-icon-sm">⚡</span>
-                <h2>SpyHub Sniper</h2>
-                <span class="status-badge" id="status-badge">CONNECTING...</span>
-                <span id="save-indicator-sniper" class="save-indicator-mini">✓ Saved</span>
-            </div>
-            <div class="header-right">
-                <button class="btn btn-sm" onclick="runBenchmark()">🏎️ Benchmark</button>
-                <button class="btn btn-sm" onclick="togglePrefire()">🎯 Prefire</button>
-                <button class="btn btn-sm" id="srv-toggle-btn" onclick="toggleServerSniper()">🖥️ Server</button>
-                <button class="btn btn-sm btn-danger" onclick="stopSniper()">■ Stop</button>
-            </div>
-        </div>
-
-        <div class="sniper-body" id="sniper-body">
-            <!-- Discord Feed (left/full) -->
-            <div class="discord-feed" id="discord-feed">
-                <div class="feed-header">
-                    <span>📡 Discord Monitor</span>
-                    <span class="channel-name" id="channel-name">#loading...</span>
-                </div>
-                <div class="messages-container" id="messages-container">
-                    <div class="system-msg">Waiting for connection...</div>
-                </div>
-            </div>
-
-            <!-- Prefire Panel (right, hidden by default) -->
-            <div class="prefire-panel hidden" id="prefire-panel">
-                <div class="feed-header">
-                    <span>🎯 SpyHub Redeem</span>
-                    <span class="ready-badge" id="ready-badge">READY</span>
-                </div>
-                <div class="redeem-section">
-                    <div class="spyhub-card-preview">
-                        <div class="card-label">SPYHUB CARD</div>
-                        <div class="card-balance" id="card-balance">$0.00</div>
-                    </div>
-                    
-                    <div class="redeem-input-area">
-                        <label>Enter your code</label>
-                        <input type="text" id="redeem-code-input" class="code-input" 
-                               placeholder="SPY-XXXX-XXXX-XXXX" 
-                               spellcheck="false" autocomplete="off">
-                        <button class="btn btn-redeem" id="redeem-btn" onclick="redeemCode()">
-                            Redeem Code
+                    <div class="btn-group-row">
+                        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="testConnection()">
+                            🧪 Test Connection
+                        </button>
+                        <button class="btn btn-secondary btn-sm" style="flex:1;border-color:var(--warning);color:var(--code-highlight)" onclick="fetchOldKeyAndTest()">
+                            🔍 Old Key Test
                         </button>
                     </div>
+                    <div id="test-results" class="test-results"></div>
+                </div>
 
-                    <div class="redeem-status" id="redeem-status"></div>
+                <!-- Sniper & Safety Settings -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2>🎯 Sniper & Safety Settings</h2>
+                    </div>
+                    <div class="input-row">
+                        <div class="input-group" style="flex:1">
+                            <label for="code-prefix">Prefix</label>
+                            <input type="text" id="code-prefix" value="SPY-" placeholder="SPY-">
+                        </div>
+                        <div class="input-group" style="flex:2">
+                            <label for="code-regex">Regex Pattern</label>
+                            <input type="text" id="code-regex" value="SPY-[A-Z0-9]{4}-[A-Z0-9]{4}-[A-Z0-9]{4}">
+                        </div>
+                    </div>
 
-                    <!-- Millisecond Speed Breakdown -->
+                    <div class="checkbox-grid">
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" id="auto-redeem" checked>
+                                ⚡ Auto-Redeem
+                            </label>
+                        </div>
+                        <div class="checkbox-group">
+                            <label>
+                                <input type="checkbox" id="sound-alert" checked>
+                                🔊 Sound Alerts
+                            </label>
+                        </div>
+                        <div class="checkbox-group full-width">
+                            <label>
+                                <input type="checkbox" id="anti-trap" checked>
+                                🛡️ Anti-Trap (Skip "ban lifetime" codes)
+                            </label>
+                        </div>
+                        <div class="checkbox-group full-width">
+                            <label>
+                                <input type="checkbox" id="auto-start" checked>
+                                🚀 Auto-Start in Background
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SpyHub Auth -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2>🌐 SpyHub Auth</h2>
+                    </div>
+                    <a href="https://discord.com/oauth2/authorize?client_id=1539462295141228604&redirect_uri=https%3A%2F%2Fspyhub-web.spyuhq.workers.dev%2Fapi%2Fsite%2Fauth%2Fcallback&response_type=code&scope=identify+email+guilds.join&state=410341daf55c8f59d3e9142833d382ad" 
+                       target="_blank" class="btn btn-discord btn-sm">
+                        Authorize with Discord
+                    </a>
+                    <div class="input-group" style="margin-top:10px">
+                        <label for="spyhub-cookie">Session Cookie (optional)</label>
+                        <input type="password" id="spyhub-cookie" placeholder="Paste session cookie..." autocomplete="off">
+                        <button class="toggle-vis" onclick="toggleVis('spyhub-cookie')">👁</button>
+                    </div>
+                </div>
+
+                <!-- 24/7 AFK Spoofer -->
+                <div class="card">
+                    <div class="card-header">
+                        <h2>🟢 24/7 Discord AFK Spoofer</h2>
+                    </div>
+                    <div class="input-group">
+                        <label for="afk-tokens">AFK Alt Tokens (One per line)</label>
+                        <textarea id="afk-tokens" rows="2" class="afk-textarea" placeholder="Paste alt tokens here..."></textarea>
+                    </div>
+                    <div class="input-group">
+                        <label for="afk-status-text">Custom Presence</label>
+                        <input type="text" id="afk-status-text" value="Active">
+                    </div>
+                    <div style="display:flex;gap:8px;margin-top:6px;">
+                        <button class="btn btn-secondary btn-sm" style="flex:1" onclick="toggleAfkSpoofer()" id="afk-toggle-btn">
+                            🟢 Start AFK Spoofer
+                        </button>
+                        <button class="btn btn-sm" onclick="clearAfkLogs()">Clear</button>
+                    </div>
+                    <div id="afk-status-box" class="afk-status-box"></div>
+                </div>
+            </section>
+
+            <!-- Right Column: Live Background Monitor & Feed -->
+            <section class="monitor-main">
+                <!-- Prefire / Redeem Card -->
+                <div class="card prefire-card">
+                    <div class="prefire-top">
+                        <div class="prefire-title">
+                            <span class="icon">🎯</span>
+                            <h2>Live Background Redeem Pipeline</h2>
+                            <span class="ready-badge" id="ready-badge">READY</span>
+                        </div>
+                        <div class="redeem-status" id="redeem-status">Listening silently in background...</div>
+                    </div>
+
+                    <!-- Speed Breakdown Counter -->
                     <div class="speed-breakdown" id="speed-breakdown">
                         <div class="speed-item">
                             <span class="speed-label">📋 Copy (Clipboard)</span>
@@ -222,26 +181,46 @@
                         </div>
                     </div>
 
-                    <div class="quick-actions">
-                        <button class="btn btn-sm" onclick="pasteFromClipboard()">📋 Paste</button>
-                        <button class="btn btn-sm" onclick="clearCode()">🗑 Clear</button>
-                        <button class="btn btn-sm" onclick="fetchOldKeyAndTest(true)">🔍 Old Key</button>
-                        <a href="https://spyhub.kdns.fr/" target="_blank" class="btn btn-sm">🌐 Open SpyHub</a>
+                    <!-- Code Redeem Input Bar -->
+                    <div class="redeem-bar">
+                        <input type="text" id="redeem-code-input" class="code-input" 
+                               placeholder="SPY-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off">
+                        <button class="btn btn-primary" id="redeem-btn" onclick="redeemCode()">
+                            ⚡ Redeem
+                        </button>
+                        <button class="btn btn-secondary btn-sm" onclick="pasteFromClipboard()">📋 Paste</button>
+                        <button class="btn btn-secondary btn-sm" onclick="clearCode()">🗑 Clear</button>
                     </div>
                 </div>
 
-                <!-- Snipe History -->
-                <div class="history-section">
-                    <h3>History</h3>
-                    <div id="history-list">
-                        <div class="history-empty">No codes sniped yet.</div>
+                <!-- Live Stream Feed + Sniped History (Split Grid) -->
+                <div class="monitor-grid">
+                    <!-- Live Discord Feed -->
+                    <div class="card feed-card">
+                        <div class="card-header">
+                            <h3>📡 Background Discord Feed</h3>
+                            <span class="feed-status" id="feed-status">Live</span>
+                        </div>
+                        <div class="messages-container" id="messages-container">
+                            <div class="system-msg">Background sniper initialized. Waiting for message drops...</div>
+                        </div>
+                    </div>
+
+                    <!-- Sniped Codes History -->
+                    <div class="card history-card">
+                        <div class="card-header">
+                            <h3>📜 Sniped Codes History</h3>
+                        </div>
+                        <div id="history-list" class="history-list">
+                            <div class="history-empty">No codes sniped yet.</div>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </div>
+            </section>
+        </main>
 
-        <!-- Stats Bar -->
-        <div class="stats-bar">
+        <!-- Bottom Stats Bar -->
+        <footer class="stats-bar">
             <div class="stat">
                 <span class="stat-label">Messages</span>
                 <span class="stat-value" id="stat-messages">0</span>
@@ -255,7 +234,7 @@
                 <span class="stat-value" id="stat-redeemed">0</span>
             </div>
             <div class="stat">
-                <span class="stat-label">Snipe Speed</span>
+                <span class="stat-label">Snipe Latency</span>
                 <span class="stat-value" id="stat-latency">-ms</span>
             </div>
             <div class="stat">
@@ -264,9 +243,9 @@
             </div>
             <div class="stat">
                 <span class="stat-label">Mode</span>
-                <span class="stat-value" id="stat-mode" style="font-size:11px;">BROWSER</span>
+                <span class="stat-value" id="stat-mode">24/7 HEADLESS</span>
             </div>
-        </div>
+        </footer>
     </div>
 
     <script src="sniper.js"></script>

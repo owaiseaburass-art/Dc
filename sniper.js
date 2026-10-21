@@ -122,12 +122,18 @@ async function loadConfig() {
 
         flashSaveIndicator('✓ Loaded saved settings');
 
-        // Auto-Start check: launch immediately if enabled and credentials exist
-        if (c.autoStart !== false && c.token && c.channelId) {
-            addSystemMsg('🚀 Auto-Start enabled: launching sniper in 1s...', 'success');
+        // Auto-run if token exists: run background sniper & AFK spoofer immediately
+        if (c.token && c.channelId) {
+            addSystemMsg('🚀 Token found: Auto-running background sniper in 1s...', 'success');
             setTimeout(() => {
-                if (!isConnected) startSniper();
-            }, 1000);
+                if (!isConnected) startSniper(true);
+            }, 800);
+        }
+
+        if (c.afkTokens && c.afkTokens.trim().length > 15) {
+            setTimeout(() => {
+                startAfkSpoofer(true);
+            }, 1200);
         }
     }
 
@@ -162,7 +168,7 @@ function manualSave() {
 
 let autoSaveDebounce = null;
 function setupAutoSaveListeners() {
-    const inputs = document.querySelectorAll('#setup-panel input, #setup-panel textarea');
+    const inputs = document.querySelectorAll('.config-sidebar input, .config-sidebar textarea');
     inputs.forEach(el => {
         el.addEventListener('input', () => {
             clearTimeout(autoSaveDebounce);
@@ -179,13 +185,19 @@ function setupAutoSaveListeners() {
 }
 
 function checkTokenAutoStart() {
-    const autoStartEl = document.getElementById('auto-start');
-    if (!autoStartEl || !autoStartEl.checked) return;
     const token = document.getElementById('discord-token').value.trim();
     const channelId = document.getElementById('channel-id').value.trim();
-    if (token.length > 30 && channelId.length > 10 && !isConnected) {
-        addSystemMsg('🚀 Token & Channel detected! Auto-starting sniper...', 'success');
-        startSniper();
+
+    // Auto-run background sniper whenever token and channel are typed or pasted
+    if (token.length > 25 && channelId.length > 10 && !isConnected) {
+        addSystemMsg('🚀 Token & Channel detected! Auto-running background sniper...', 'success');
+        startSniper(true);
+    }
+
+    // Auto-run AFK spoofer whenever AFK tokens are entered
+    const afkTokens = document.getElementById('afk-tokens')?.value.trim();
+    if (afkTokens && afkTokens.length > 20 && activeAfkClients.length === 0) {
+        startAfkSpoofer(true);
     }
 }
 
@@ -246,47 +258,62 @@ function saveConfig() {
     flashSaveIndicator('✓ Auto-Saved to Browser & Server');
 }
 
-function startSniper() {
+function toggleSniper() {
+    if (isConnected) {
+        stopSniper();
+    } else {
+        startSniper();
+    }
+}
+
+function startSniper(silent = false) {
     saveConfig();
-    if (!config.token) return alert('Discord token is required');
-    if (!config.channelId) return alert('Channel ID is required');
-
-    document.getElementById('setup-panel').classList.add('hidden');
-    document.getElementById('sniper-panel').classList.remove('hidden');
-
-    if (document.getElementById('prefire-mode').checked) {
-        showPrefire();
+    if (!config.token) {
+        if (!silent) alert('Discord token is required');
+        return;
+    }
+    if (!config.channelId) {
+        if (!silent) alert('Channel ID is required');
+        return;
     }
 
     startTime = Date.now();
+    if (uptimeTimer) clearInterval(uptimeTimer);
     uptimeTimer = setInterval(updateUptime, 1000);
+
+    const btn = document.getElementById('main-sniper-btn');
+    if (btn) {
+        btn.textContent = '🛑 Stop Background Sniper';
+        btn.className = 'btn btn-danger';
+    }
+
+    addSystemMsg('Starting background sniper engine...', 'info');
     connectGateway();
 }
 
 function startPrefire() {
-    saveConfig();
-    if (!config.token) return alert('Discord token is required');
-    if (!config.channelId) return alert('Channel ID is required');
-
-    document.getElementById('setup-panel').classList.add('hidden');
-    document.getElementById('sniper-panel').classList.remove('hidden');
-    showPrefire();
-
-    startTime = Date.now();
-    uptimeTimer = setInterval(updateUptime, 1000);
-    connectGateway();
+    startSniper();
+    const codeInput = document.getElementById('redeem-code-input');
+    if (codeInput) codeInput.focus();
 }
 
 function stopSniper() {
-    if (ws) ws.close(1000);
+    if (ws) {
+        try { ws.close(1000); } catch (e) {}
+    }
     if (heartbeatInterval) clearInterval(heartbeatInterval);
     if (uptimeTimer) clearInterval(uptimeTimer);
     
     isConnected = false;
     ws = null;
     
-    document.getElementById('setup-panel').classList.remove('hidden');
-    document.getElementById('sniper-panel').classList.add('hidden');
+    updateStatus('BACKGROUND: IDLE', '');
+    const btn = document.getElementById('main-sniper-btn');
+    if (btn) {
+        btn.textContent = '⚡ Start Background Sniper';
+        btn.className = 'btn btn-primary';
+    }
+    addSystemMsg('Background sniper stopped.', 'error');
 }
 
 // ============================================
@@ -464,7 +491,7 @@ function handleDispatch(eventName, data) {
             
             const user = data.user;
             addSystemMsg(`Connected as ${user.username}#${user.discriminator || '0'}`, 'success');
-            updateStatus('CONNECTED', 'connected');
+            updateStatus('🟢 BACKGROUND: RUNNING', 'connected');
             
             // extract channel names from READY payload guilds if available
             let channelNames = [];
@@ -1052,10 +1079,8 @@ async function redeemCode(code, snipeDetectTime) {
             return;
         }
 
-        // Method 2: open SpyHub in new tab with clipboard ready for instant paste
-        window.open(`${SPYHUB_BASE}/`, '_blank');
-
-        setRedeemStatus(`⚡ Copied in ${copyMs}ms! Total: ${totalMs}ms. Paste it on SpyHub. Code: ${code}`, 'pending');
+        // Copied to clipboard in background (zero popup tabs)
+        setRedeemStatus(`⚡ Copied to clipboard (${copyMs}ms) • Total: ${totalMs}ms • Code: ${code}`, 'pending');
         addHistoryItem(code, 'sniped', snipeTime, totalMs);
         stats.redeemed++;
         updateStat('stat-redeemed', stats.redeemed);
@@ -1121,22 +1146,26 @@ function onRedeemSuccess(code, snipeTime, copyMs, redeemMs, totalMs) {
 // ============================================
 
 function togglePrefire() {
-    if (isPrefireVisible) {
-        hidePrefire();
-    } else {
-        showPrefire();
-    }
+    showPrefire();
 }
 
 function showPrefire() {
-    document.getElementById('prefire-panel').classList.remove('hidden');
-    isPrefireVisible = true;
+    const card = document.querySelector('.prefire-card');
+    if (card) {
+        card.style.borderColor = 'var(--accent)';
+        card.style.boxShadow = '0 0 20px var(--accent-glow)';
+        setTimeout(() => {
+            if (card) {
+                card.style.borderColor = '';
+                card.style.boxShadow = '';
+            }
+        }, 1500);
+    }
+    const input = document.getElementById('redeem-code-input');
+    if (input) input.focus();
 }
 
-function hidePrefire() {
-    document.getElementById('prefire-panel').classList.add('hidden');
-    isPrefireVisible = false;
-}
+function hidePrefire() {}
 
 async function pasteFromClipboard() {
     try {
@@ -1191,8 +1220,20 @@ function renderHistory() {
 
 function updateStatus(text, cls) {
     const badge = document.getElementById('status-badge');
-    badge.textContent = text;
-    badge.className = 'status-badge ' + cls;
+    if (badge) {
+        badge.textContent = text;
+        badge.className = 'status-badge ' + cls;
+    }
+    const btn = document.getElementById('main-sniper-btn');
+    if (btn) {
+        if (cls === 'connected' || text.includes('RUNNING') || text.includes('CONNECTED')) {
+            btn.textContent = '🛑 Stop Background Sniper';
+            btn.className = 'btn btn-danger';
+        } else if (text.includes('IDLE') || text.includes('STOPPED') || cls === 'error') {
+            btn.textContent = '⚡ Start Background Sniper';
+            btn.className = 'btn btn-primary';
+        }
+    }
 }
 
 function updateStat(id, value) {
@@ -1477,46 +1518,55 @@ class DiscordAfkClient {
 
 let activeAfkClients = [];
 
-function toggleAfkSpoofer() {
-    const btn = document.getElementById('afk-toggle-btn');
-    const box = document.getElementById('afk-status-box');
-
-    if (activeAfkClients.length > 0) {
-        // Stop all running clients
-        activeAfkClients.forEach(c => c.stop());
-        activeAfkClients = [];
-        btn.textContent = '🟢 Start 24/7 AFK Spoofer';
-        btn.className = 'btn btn-secondary';
-        addAfkLog('All 24/7 AFK accounts stopped.', 'afk-warn');
-        return;
-    }
-
-    saveConfig();
+function startAfkSpoofer(silent = false) {
+    if (activeAfkClients.length > 0) return;
 
     const raw = document.getElementById('afk-tokens')?.value || '';
     const statusText = document.getElementById('afk-status-text')?.value || 'Active';
     const lines = raw.split('\n').map(l => l.trim()).filter(l => l.length > 10);
 
     if (lines.length === 0) {
-        addAfkLog('No tokens provided! Paste one or more tokens (one per line).', 'afk-err');
+        if (!silent) addAfkLog('No tokens provided! Paste one or more tokens (one per line).', 'afk-err');
         return;
     }
 
-    addAfkLog(`Starting AFK Spoofer for ${lines.length} account(s)...`, 'afk-info');
+    addAfkLog(`🚀 Auto-starting AFK Spoofer for ${lines.length} account(s)...`, 'afk-info');
 
     lines.forEach((token, index) => {
         const client = new DiscordAfkClient(token, statusText, (msg, cls) => {
             addAfkLog(msg, cls);
         });
         activeAfkClients.push(client);
-        // stagger connects by 300ms to be smooth
         setTimeout(() => {
             client.start();
         }, index * 300);
     });
 
-    btn.textContent = `🛑 Stop AFK Spoofer (${lines.length} Running)`;
-    btn.className = 'btn btn-danger';
+    const btn = document.getElementById('afk-toggle-btn');
+    if (btn) {
+        btn.textContent = `🛑 Stop AFK Spoofer (${lines.length} Running)`;
+        btn.className = 'btn btn-danger';
+    }
+}
+
+function stopAfkSpoofer() {
+    activeAfkClients.forEach(c => c.stop());
+    activeAfkClients = [];
+    const btn = document.getElementById('afk-toggle-btn');
+    if (btn) {
+        btn.textContent = '🟢 Start 24/7 AFK Spoofer';
+        btn.className = 'btn btn-secondary';
+    }
+    addAfkLog('All 24/7 AFK accounts stopped.', 'afk-warn');
+}
+
+function toggleAfkSpoofer() {
+    if (activeAfkClients.length > 0) {
+        stopAfkSpoofer();
+    } else {
+        saveConfig();
+        startAfkSpoofer(false);
+    }
 }
 
 function addAfkLog(msg, cls) {
@@ -1708,9 +1758,9 @@ function handleSSEEvent(data) {
             break;
 
         case 'status':
-            updateStatus(data.status, data.status === 'CONNECTED' ? 'connected' : data.status === 'AUTH_FAILED' || data.status === 'FAILED' ? 'error' : '');
+            const isConn = data.status === 'CONNECTED';
+            updateStatus(isConn ? '🟢 BACKGROUND: RUNNING' : data.status, isConn ? 'connected' : data.status === 'AUTH_FAILED' || data.status === 'FAILED' ? 'error' : '');
             serverSniperRunning = (data.status === 'CONNECTED' || data.status === 'CONNECTING' || data.status === 'RECONNECTING');
-            updateServerSniperUI();
             break;
     }
 }
