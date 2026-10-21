@@ -473,12 +473,12 @@ app.get('/api/status', (req, res) => {
 });
 
 // Start/Stop
-app.post('/api/sniper/start', (req, res) => {
+app.post('/api/monitor/start', (req, res) => {
     startGateway();
     res.json({ success: true, running: state.running, status: state.status });
 });
 
-app.post('/api/sniper/stop', (req, res) => {
+app.post('/api/monitor/stop', (req, res) => {
     stopGateway();
     res.json({ success: true, running: false, status: 'IDLE' });
 });
@@ -491,7 +491,7 @@ app.post('/api/test-copy', (req, res) => {
 });
 
 // SSE Stream for Real-Time UI Updates
-app.get('/api/sniper/events', (req, res) => {
+app.get('/api/monitor/events', (req, res) => {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
